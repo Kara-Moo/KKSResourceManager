@@ -69,6 +69,27 @@ const mockApp = {
   GetInstalledModsData: () => JSON.stringify({ success: true, message: '', data: { nodes: [] } }),
   GetModsTreeData: () => JSON.stringify({ success: true, message: '', data: { nodes: [] } }),
   GetCardPreview: (p) => JSON.stringify({ success: true, message: '', data: { dataUri: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==' } }),
+  // v2.1：右栏面板一次请求出全部
+  GetRightPanel: (side, mode, rel, focusAbs) => {
+    window.__calls.push(['GetRightPanel', side, mode, rel, focusAbs]);
+    const d = window.__panelData || {
+      focus: { kind: 'folder', name: '根目录', abs: 'C:/KK/female', info: '2 个子文件夹' },
+      sections: [
+        { id: 'folders', title: '子文件夹', layout: 'grid', total: 2, tiles: [
+          { kind: 'card', name: 'c1.png', rel: '', abs: 'C:/x/c1.png', badge: '', thumbKey: 'k1', thumb: '', pending: true },
+          { kind: 'card', name: 'c2.png', rel: '', abs: 'C:/x/c2.png', badge: '', thumbKey: 'k2', thumb: '', pending: true },
+        ], more: 0, moreLabel: '', visible: true, empty: '' },
+        { id: 'cards', title: '此文件夹的卡片', layout: 'grid', total: 0, tiles: [], more: 0, moreLabel: '', visible: false, empty: '' },
+      ],
+      gen: 0,
+    };
+    return JSON.stringify({ success: true, message: '', data: d });
+  },
+  GetLogs: (sinceSeq, level) => JSON.stringify({ success: true, message: '', data: { seq: 10, entries: [
+    { seq: 9, ts: Date.now(), level: 'info', scope: 'scan', msg: '测试日志信息' },
+    { seq: 10, ts: Date.now(), level: 'error', scope: 'isolate', msg: '测试日志错误' },
+  ], total: 2, errors: 1 } }),
+  GetZipmodDetail: (guid) => JSON.stringify({ success: true, message: '', data: { guid, path: 'C:/x.zipmod', base: 'x.zipmod', size: 100, cards: [], plugins: [], refCards: 0, refPlugins: 0, parseErr: '' } }),
   GetFolderPreview: (p) => JSON.stringify({ success: true, message: '', data: {
     stats: { subfolderCount: 2, cardCount: 3, totalFiles: 7, totalSize: 1234 },
     previews: [{ name: 's1', path: 'p1', count: 3, dataUri: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==' }],
@@ -135,8 +156,10 @@ console.log('\n【1】单击行 → 焦点高亮 + 预览刷新（§3.1）');
   check('单击不抛 JS 异常', jsErrors.length === before, jsErrors.slice(before).join('; '));
   const focused = await page.locator('#left-list .list-item.is-focused').count();
   check('单击后出现焦点高亮行', focused === 1, `实际 ${focused} 个`);
-  const title = await page.locator('#preview-title').innerText();
-  check('预览标题已更新', title.includes('FolderA'), `实际 "${title}"`);
+  const title = await page.locator('#panel-info-title').innerText();
+  check('右栏信息栏标题已更新', title.length > 0, `实际 "${title}"`);
+  const panelSections = await page.locator('#panel-sections .panel-section').count();
+  check('右栏面板已渲染区域', panelSections >= 1, `实际 ${panelSections} 个`);
 }
 
 console.log('\n【2】右键行 → 菜单出现且不消失（§3.2）');
@@ -243,6 +266,118 @@ console.log('\n【6】隐藏项图标与普通文件夹一致（§3.5）');
 console.log('\n【7】无未捕获 JS 异常');
 {
   check('全程无 JS 错误', jsErrors.length === 0, jsErrors.join(' | '));
+}
+
+console.log('\n【8】右栏面板：九宫格与区域规则（v2.1 §11.1）');
+{
+  // 场景：无子文件夹 + 有卡片 → 只有区域 B，区域 A 完全不出现
+  await page.evaluate(() => {
+    window.__panelData = {
+      focus: { kind: 'folder', name: '精品卡2', abs: 'C:/KK/female', info: '115 张卡片 · 23 个子文件夹 · 750.6 MB' },
+      sections: [
+        { id: 'folders', title: '子文件夹', layout: 'grid', total: 0, tiles: [], more: 0, moreLabel: '', visible: false, empty: '' },
+        { id: 'cards', title: '此文件夹的卡片', layout: 'grid', total: 5, tiles: [
+          { kind: 'card', name: 'c1.png', rel: 'c1.png', abs: 'C:/KK/female/c1.png', badge: '', thumbKey: 'k1', thumb: '', pending: true },
+          { kind: 'card', name: 'c2.png', rel: 'c2.png', abs: 'C:/KK/female/c2.png', badge: '', thumbKey: 'k2', thumb: '', pending: true },
+          { kind: 'card', name: 'c3.png', rel: 'c3.png', abs: 'C:/KK/female/c3.png', badge: '', thumbKey: 'k3', thumb: '', pending: true },
+          { kind: 'card', name: 'c4.png', rel: 'c4.png', abs: 'C:/KK/female/c4.png', badge: '', thumbKey: 'k4', thumb: '', pending: true },
+          { kind: 'card', name: 'c5.png', rel: 'c5.png', abs: 'C:/KK/female/c5.png', badge: '', thumbKey: 'k5', thumb: '', pending: true },
+        ], more: 0, moreLabel: '', visible: true, empty: '' },
+      ],
+      gen: 1,
+    };
+  });
+  await page.evaluate(() => refreshPanel());
+  await page.waitForTimeout(300);
+
+  const sections = await page.locator('#panel-sections .panel-section').count();
+  check('无子文件夹时只渲染 1 个区域', sections === 1, `实际 ${sections} 个`);
+
+  const cells = await page.locator('#panel-sections .panel-cell').count();
+  check('5 张卡片渲染 5 个格子', cells === 5, `实际 ${cells} 个`);
+
+  // 行数自适应：5 格 = 2 行（网格 3 列 → 高度约 2 行）
+  const grid = await page.evaluate(() => {
+    const g = document.querySelector('#panel-sections .panel-grid');
+    if (!g) return null;
+    const tops = new Set(Array.from(g.children).map(c => Math.round(c.getBoundingClientRect().top)));
+    return tops.size;
+  });
+  check('5 格只占 2 行（不占 3 行）', grid === 2, `实际 ${grid} 行`);
+
+  const infoTitle = await page.locator('#panel-info-title').innerText();
+  check('信息栏显示焦点名称', infoTitle.includes('精品卡2'), `实际 "${infoTitle}"`);
+  const infoSub = await page.locator('#panel-info-sub').innerText();
+  check('信息栏显示统计', infoSub.includes('115'), `实际 "${infoSub}"`);
+}
+
+console.log('\n【9】右栏面板：超过 9 个显示「还有 N」（v2.1 §11.1）');
+{
+  await page.evaluate(() => {
+    const tiles = [];
+    for (let i = 0; i < 8; i++) {
+      tiles.push({ kind: 'card', name: 'c' + i + '.png', rel: '', abs: 'C:/x/c' + i + '.png', badge: '', thumbKey: 'k' + i, thumb: '', pending: true });
+    }
+    tiles.push({ kind: 'more', name: '还有 107 张角色卡', rel: '', abs: '', badge: '', thumbKey: '', thumb: '', pending: false });
+    window.__panelData = {
+      focus: { kind: 'folder', name: '大目录', abs: 'C:/KK/female', info: '115 张卡片' },
+      sections: [
+        { id: 'folders', title: '子文件夹', layout: 'grid', total: 0, tiles: [], more: 0, moreLabel: '', visible: false, empty: '' },
+        { id: 'cards', title: '此文件夹的卡片', layout: 'grid', total: 115, tiles, more: 107, moreLabel: '还有 107 张角色卡', visible: true, empty: '' },
+      ],
+      gen: 2,
+    };
+  });
+  await page.evaluate(() => refreshPanel());
+  await page.waitForTimeout(300);
+
+  const cells = await page.locator('#panel-sections .panel-cell').count();
+  check('8 张 + 1 个「还有」= 9 格', cells === 9, `实际 ${cells} 个`);
+  const moreText = await page.locator('#panel-sections .panel-cell.is-more .more-label').innerText().catch(() => '');
+  check('「还有」格文案正确', moreText.includes('还有 107'), `实际 "${moreText}"`);
+}
+
+console.log('\n【10】日志窗口：按钮 + 弹窗（v2.1 §3.6）');
+{
+  const logBoxExists = await page.locator('#log-box').count();
+  check('右栏不再有常驻日志框', logBoxExists === 0, `实际 ${logBoxExists} 个`);
+
+  const btn = await page.locator('#btn-open-log').count();
+  check('存在「查看日志」按钮', btn === 1);
+
+  await page.locator('#btn-open-log').click();
+  await page.waitForTimeout(400);
+  const modalShown = await page.locator('#log-modal.show').count();
+  check('点击后日志窗口弹出', modalShown === 1);
+
+  const rows = await page.locator('#log-body .log-row').count();
+  check('日志窗口渲染了条目', rows >= 2, `实际 ${rows} 行`);
+
+  // 级别过滤
+  await page.locator('#log-seg button[data-level="error"]').click();
+  await page.waitForTimeout(400);
+  const errRows = await page.locator('#log-body .log-row').count();
+  const footText = await page.locator('#log-foot').innerText();
+  check('级别过滤生效', errRows >= 1 && errRows < rows, `错误 ${errRows} / 全部 ${rows}`);
+  check('底部显示统计', footText.includes('本次会话'), `实际 "${footText}"`);
+
+  // Esc 关闭
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  const closed = await page.locator('#log-modal.show').count();
+  check('Esc 可关闭日志窗口', closed === 0);
+}
+
+console.log('\n【11】thumb:ready 局部补图（v2.1 §10.3）');
+{
+  await page.evaluate(() => {
+    // 模拟后端推送
+    const handler = window.__thumbHandler;
+    if (handler) handler([{ thumbKey: 'k1', dataUri: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==' }]);
+  });
+  await page.waitForTimeout(200);
+  const imgs = await page.locator('#panel-sections .panel-cell img').count();
+  check('补图后出现 img 元素', imgs >= 1, `实际 ${imgs} 个`);
 }
 
 await page.screenshot({ path: path.join(__dirname, '..', 'build', 'frontend-test.png'), fullPage: false });

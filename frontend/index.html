@@ -7,6 +7,13 @@
         :root {
             --bg: #eef2f5; --panel-bg: #ffffff; --border: #d1d9e0;
             --primary: #0078d4; --success: #107c10; --danger: #d13438; --warning: #ffb900;
+            /* v2.1 右栏用的语义变量 */
+            --panel: #ffffff;
+            --line: #e6e8eb;
+            --accent: #2f6feb;
+            --text-1: #1f2329;
+            --text-2: #5f6b7a;
+            --text-3: #8b95a1;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; background-color: var(--bg); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -224,46 +231,189 @@
 
         .right-panel { width: 320px; display: flex; flex-direction: column; gap: 10px; }
         .preview-box { flex: 1; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px; }
-        .preview-img { width: 150px; height: 200px; background: #eee; border: 2px dashed #ccc; display: flex; align-items: center; justify-content: center; color: #999; margin-bottom: 10px; text-align: center; padding: 10px; word-break: break-all; }
-        .preview-img img { max-width: 100%; max-height: 100%; object-fit: contain; }
+        /* ================= 右栏（v2.1 §3.1 / §3.2） ================= */
+        .right-panel {
+            width: 400px; flex-shrink: 0;
+            display: flex; flex-direction: column;
+            border-left: 1px solid var(--border);
+            background: var(--panel);
+            overflow: hidden;
+        }
 
-        /* 文件夹预览：2x2 窗格 */
-        .folder-preview { width: 100%; margin-bottom: 10px; }
-        .folder-stats { font-size: 12px; color: #444; text-align: center; margin-bottom: 8px; line-height: 1.6; }
-        .folder-stats b { color: #0b3d66; }
-        .preview-grid {
+        /* 面板主体：整体纵向滚动，内部两区不各自滚动 */
+        .panel-scroll {
+            flex: 1; overflow-y: auto;
+            padding: 0 12px;
+        }
+
+        /* 区域：视觉独立、语义独立 */
+        .panel-section { padding: 12px 0; }
+        .panel-section + .panel-section { border-top: 1px solid var(--line); }
+
+        /* 区域标题行：左标题 + 右计数 */
+        .panel-section-head {
+            height: 32px; display: flex; align-items: center;
+            justify-content: space-between; margin-bottom: 8px;
+        }
+        .panel-section-title { font-size: 14px; font-weight: 600; color: var(--text-1); }
+        .panel-section-count { font-size: 12px; color: var(--text-3); }
+        .panel-section-sub { font-size: 11px; color: var(--text-3); margin-left: 6px; }
+
+        /* 九宫格：3 列，行高由内容决定（不设 grid-template-rows） */
+        .panel-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 6px;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
         }
-        .preview-cell {
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            background: #fafbfc;
-            padding: 4px;
-            text-align: center;
-            overflow: hidden;
-            min-height: 74px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
+        .panel-cell {
+            display: flex; flex-direction: column;
+            border: 1px solid var(--line); border-radius: 6px;
+            overflow: hidden; background: var(--panel); cursor: pointer;
         }
-        .preview-cell img { max-width: 100%; max-height: 54px; object-fit: contain; }
-        .preview-cell .cell-name {
-            font-size: 10px;
-            color: #555;
-            margin-top: 3px;
-            word-break: break-all;
-            line-height: 1.25;
-            max-height: 30px;
-            overflow: hidden;
+        .panel-cell .thumb {
+            width: 100%; aspect-ratio: 3 / 4;
+            object-fit: cover; background: #eef0f3;
+            display: flex; align-items: center; justify-content: center;
+            color: var(--text-3); font-size: 22px;
         }
-        .preview-cell .cell-count { font-size: 10px; color: #999; }
-        .preview-cell.more { background: #eef3f8; color: #456; }
-        .preview-cell.more .cell-name { color: #334; font-size: 11px; font-weight: bold; }
+        .panel-cell .thumb img { width: 100%; height: 100%; object-fit: cover; }
+        .panel-cell .caption {
+            height: 20px; line-height: 20px; padding: 0 4px;
+            font-size: 11px; color: var(--text-2);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .panel-cell.is-selected {
+            border-color: var(--accent);
+            box-shadow: inset 0 0 0 1px var(--accent);
+        }
+        .panel-cell.is-more {
+            border-style: dashed; cursor: default;
+        }
+        .panel-cell.is-more .more-label {
+            aspect-ratio: 3 / 4; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 4px;
+            color: var(--text-3);
+            font-size: 11px; text-align: center; padding: 4px;
+            white-space: normal; line-height: 1.4;
+        }
 
-        .log-box { height: 250px; background: #1e1e1e; color: #d4d4d4; border-radius: 6px; padding: 10px; overflow-y: auto; font-family: 'Consolas', monospace; font-size: 12px; }
+        /* 骨架屏：缩略图未就绪 */
+        .panel-cell .thumb.is-pending {
+            background: #eef0f3;
+            animation: thumb-breathe 1.4s ease-in-out infinite;
+        }
+        @keyframes thumb-breathe {
+            0%, 100% { background: #eef0f3; }
+            50%      { background: #e2e6ea; }
+        }
+
+        /* 列表布局（插件区域） */
+        .panel-list { display: flex; flex-direction: column; gap: 4px; }
+        .panel-list-row {
+            height: 44px; display: flex; align-items: center; gap: 8px;
+            border: 1px solid var(--line); border-radius: 6px;
+            padding: 4px 8px; cursor: pointer; background: var(--panel);
+        }
+        .panel-list-row:hover { background: #f4f6f8; }
+        .panel-list-row .ico { font-size: 18px; flex-shrink: 0; }
+        .panel-list-row .txt { min-width: 0; flex: 1; }
+        .panel-list-row .nm {
+            font-size: 14px; color: var(--text-1);
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+            overflow: hidden; line-height: 1.2;
+        }
+        .panel-list-row .sub { font-size: 11px; color: var(--text-3); }
+
+        /* 空态 */
+        .panel-empty {
+            padding: 24px 12px; text-align: center;
+            font-size: 12px; color: var(--text-3); line-height: 1.7;
+        }
+
+        /* 信息栏（固定在底部，不随内容滚动） */
+        .panel-info {
+            height: 64px; flex-shrink: 0;
+            border-top: 1px solid var(--line);
+            padding: 8px 12px;
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 8px; background: var(--panel);
+        }
+        .panel-info-left { min-width: 0; flex: 1; }
+        .panel-info-title {
+            font-size: 13px; font-weight: 600; color: var(--text-1);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .panel-info-sub {
+            font-size: 12px; color: var(--text-3); margin-top: 2px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .panel-info-warn { color: var(--warning); }
+
+        /* 日志按钮 */
+        .btn-log {
+            flex-shrink: 0; padding: 5px 10px; font-size: 12px;
+            background: #5a6b7b; font-weight: normal;
+        }
+
+        /* 日志模态 */
+        .log-modal {
+            position: fixed; inset: 0; z-index: 10050;
+            background: rgba(16,24,40,.45);
+            display: none; align-items: center; justify-content: center;
+        }
+        .log-modal.show { display: flex; }
+        .log-panel {
+            background: #fff; border-radius: 10px; overflow: hidden;
+            width: min(1000px, 82vw); height: min(680px, 78vh);
+            display: flex; flex-direction: column;
+            box-shadow: 0 12px 40px rgba(16,24,40,.24);
+        }
+        .log-head {
+            height: 48px; flex-shrink: 0; display: flex; align-items: center; gap: 12px;
+            padding: 0 16px; border-bottom: 1px solid var(--line);
+        }
+        .log-head .title { font-size: 15px; font-weight: 600; }
+        .log-seg { display: flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+        .log-seg button {
+            padding: 4px 12px; font-size: 12px; background: #fff; color: var(--text-2);
+            border: none; border-radius: 0; font-weight: normal;
+        }
+        .log-seg button.on { background: var(--accent); color: #fff; }
+        .log-search {
+            flex: 1; max-width: 240px; padding: 5px 10px; font-size: 12px;
+            border: 1px solid var(--line); border-radius: 5px; outline: none;
+        }
+        .log-head .spacer { flex: 1; }
+        .log-head button.act {
+            padding: 5px 10px; font-size: 12px; background: #5a6b7b; font-weight: normal;
+        }
+        .log-body {
+            flex: 1; overflow-y: auto; padding: 4px 0;
+            font-family: Consolas, 'Courier New', monospace; font-size: 12px;
+            background: #fbfcfd;
+        }
+        .log-row {
+            display: flex; align-items: flex-start; gap: 10px;
+            padding: 3px 16px; line-height: 1.5;
+            border-left: 3px solid transparent;
+        }
+        .log-row .ts { color: var(--text-3); flex-shrink: 0; }
+        .log-row .lv { flex-shrink: 0; width: 52px; }
+        .log-row .ms { flex: 1; word-break: break-all; color: var(--text-1); }
+        .log-row.lv-info    { border-left-color: #2f6feb; }
+        .log-row.lv-success { border-left-color: #1a7f37; }
+        .log-row.lv-warn    { border-left-color: #d99e00; }
+        .log-row.lv-error   { border-left-color: #c62828; }
+        .log-row.lv-info .lv    { color: #2f6feb; }
+        .log-row.lv-success .lv { color: #1a7f37; }
+        .log-row.lv-warn .lv    { color: #b37d00; }
+        .log-row.lv-error .lv   { color: #c62828; }
+        .log-foot {
+            height: 36px; flex-shrink: 0; display: flex; align-items: center;
+            padding: 0 16px; border-top: 1px solid var(--line);
+            font-size: 12px; color: var(--text-3);
+        }
+
         .log-success { color: #4ec9b0; }
         .log-warn { color: #dcdcaa; }
         .log-err { color: #f48771; }
@@ -338,13 +488,18 @@
             <div class="list-content" id="right-list"></div>
         </div>
 
+        <!-- 右栏（v2.1 §3.1）：两个独立区域 + 固定信息栏 -->
         <div class="right-panel">
-            <div class="preview-box">
-                <div class="preview-img" id="preview-img">暂无预览</div>
-                <h4 id="preview-title">未选择文件</h4>
-                <div id="preview-mods" style="font-size:12px; color:#666; margin-top:5px; text-align:center; word-break: break-all;"></div>
+            <div class="panel-scroll" id="panel-scroll">
+                <div id="panel-sections"></div>
             </div>
-            <div class="log-box" id="log-box"></div>
+            <div class="panel-info">
+                <div class="panel-info-left">
+                    <div class="panel-info-title" id="panel-info-title">未选择文件</div>
+                    <div class="panel-info-sub" id="panel-info-sub"></div>
+                </div>
+                <button class="btn-log" id="btn-open-log">📜 查看日志</button>
+            </div>
         </div>
     </div>
 
@@ -362,6 +517,27 @@
 
     <!-- Toast 容器 -->
     <div class="toast-stack" id="toast-stack"></div>
+
+    <!-- 日志窗口（v2.1 §3.6）：模态面板，非抽屉、非悬浮小窗 -->
+    <div class="log-modal" id="log-modal">
+        <div class="log-panel">
+            <div class="log-head">
+                <span class="title">运行日志</span>
+                <div class="log-seg" id="log-seg">
+                    <button data-level="all" class="on">全部</button>
+                    <button data-level="warn">警告</button>
+                    <button data-level="error">错误</button>
+                </div>
+                <input class="log-search" id="log-search" placeholder="搜索…">
+                <span class="spacer"></span>
+                <button class="act" id="btn-log-copy">复制</button>
+                <button class="act" id="btn-log-export">导出</button>
+                <button class="act" id="btn-log-close">×</button>
+            </div>
+            <div class="log-body" id="log-body"></div>
+            <div class="log-foot" id="log-foot">本次会话 0 条</div>
+        </div>
+    </div>
 
 <script>
     // =====================================================================
@@ -408,7 +584,6 @@
     const elRightList = document.getElementById('right-list');
     const elLeftPath = document.getElementById('left-path');
     const elRightPath = document.getElementById('right-path');
-    const elLog = document.getElementById('log-box');
     const elSelectAllLeft = document.getElementById('select-all-left');
     const elSelectAllRight = document.getElementById('select-all-right');
     const elBtnBackLeft = document.getElementById('btn-back-left');
@@ -493,15 +668,30 @@
     // 工具
     // ---------------------------------------------------------------------
 
+    // log 即时反馈。
+    //
+    // 右栏底部不再常驻日志框（§3.6），因此：
+    //   - 重要消息走 toast（右下角轻提示）
+    //   - 完整历史在后端环形缓冲，通过「查看日志」窗口查看
     function log(msg, type = 'info') {
-        const span = document.createElement('div');
-        span.className = type === 'success' ? 'log-success'
-                       : type === 'warn' ? 'log-warn'
-                       : type === 'err' ? 'log-err'
-                       : 'log-info';
-        span.innerText = `> ${msg}`;
-        elLog.appendChild(span);
-        elLog.scrollTop = elLog.scrollHeight;
+        const level = type === 'success' ? 'success'
+                    : type === 'warn' ? 'warn'
+                    : type === 'err' ? 'error'
+                    : 'info';
+        // 追加到本地缓存（打开日志窗口时立即可见）
+        logEntries.push({
+            seq: ++logSeq,
+            ts: Date.now(),
+            level: level,
+            scope: 'ui',
+            msg: msg,
+        });
+        if (logModalOpen) renderLogs();
+
+        // 成功与错误才弹 Toast，信息类不打扰用户
+        if (level === 'success') toast(msg, 'success');
+        else if (level === 'error') toast(msg, 'error');
+        else if (level === 'warn') toast(msg, 'warn');
     }
 
     // 解析后端统一响应：{success, message, data}
@@ -550,166 +740,323 @@
     }
 
     // ---------------------------------------------------------------------
-    // 预览
+    // 右栏面板（v2.1 §3）
+    //
+    // 数据来自一次 GetRightPanel 请求（红线 N6）。
+    // 缩略图未就绪时渲染骨架格，由 thumb:ready 事件局部补图，
+    // **不重渲染整个面板**。
     // ---------------------------------------------------------------------
 
-    // 预览：图片由后端缩放后以 base64 data URI 返回
-    // （Wails 的 WebView 无法直接加载 file:// 本地绝对路径）
-    let previewSeq = 0;
+    const elPanelSections = document.getElementById('panel-sections');
+    const elPanelInfoTitle = document.getElementById('panel-info-title');
+    const elPanelInfoSub = document.getElementById('panel-info-sub');
 
-    async function updatePreview(item) {
-        const seq = ++previewSeq;
-        document.getElementById('preview-title').innerText = item.name;
+    // panelGen 当前面板代数，用于丢弃过期响应。
+    let panelGen = 0;
+    // panelThumbs thumbKey -> 已加载的 dataURI（避免重复设置 src）
+    const panelThumbs = new Map();
 
-        const imgBox = document.getElementById('preview-img');
-        imgBox.innerHTML = '';
+    // panelSide 当前右栏跟随哪一侧（left / right）。
+    let panelSide = 'left';
 
-        // 文件夹：显示统计信息与 2x2 子文件夹预览窗格
-        if (item.type === 'folder') {
-            await renderFolderPreview(item, seq);
+    // focusTimers 各侧的焦点延迟计时器。
+    const focusTimers = { left: null, right: null };
+
+    // resetPanel 清空右栏面板。
+    function resetPanel() {
+        panelGen++;
+        elPanelSections.innerHTML = '';
+        const empty = document.createElement('div');
+        empty.className = 'panel-empty';
+        empty.innerText = '暂无内容';
+        elPanelSections.appendChild(empty);
+        elPanelInfoTitle.innerText = '未选择文件';
+        elPanelInfoSub.innerText = '';
+        elPanelInfoSub.classList.remove('panel-info-warn');
+    }
+
+    // scheduleFocus 延迟设置焦点（等待双击序列结束）。
+    //
+    // 必须延迟：单击若立即重渲染，DOM 被 replaceChildren 重建，
+    // 随后的 dblclick 事件就找不到原来的行（双击进不去文件夹）。
+    function scheduleFocus(side, id) {
+        if (focusTimers[side]) {
+            clearTimeout(focusTimers[side]);
+        }
+        focusTimers[side] = setTimeout(() => {
+            focusTimers[side] = null;
+            setFocusByID(side, id);
+        }, 220);
+    }
+
+    // setFocusByID 按 ID 设置焦点并刷新右栏面板。
+    function setFocusByID(side, id) {
+        const item = findNodeByID(side, id);
+        if (!item) return;
+        if (side === 'left') {
+            leftFocus = item;
+        } else {
+            rightFocus = item;
+        }
+        // 右栏跟随焦点所在侧
+        panelSide = side;
+        renderList(side);
+        refreshPanel();
+    }
+
+    // tileCount 返回实际渲染的格子数与 "还有" 数量。
+    // 必须与后端 internal 的 tileCount 保持一致。
+    //
+    // n <= 9  : 全显示，无 "还有" 格
+    // n >  9 : 显示 8 个 + 1 个 "还有 (n-8)" 格
+    function tileCount(n) {
+        if (n <= 9) return { tiles: n, more: 0 };
+        return { tiles: 8, more: n - 8 };
+    }
+
+    // refreshPanel 重新拉取并渲染右栏。
+    async function refreshPanel() {
+        const side = panelSide;
+        const focus = side === 'left' ? leftFocus : rightFocus;
+        const curPath = side === 'left' ? leftCurrentPath : rightCurrentPath;
+        const gen = ++panelGen;
+
+        const res = await callBackend('GetRightPanel', side, currentMode, curPath, focus ? focus.id : '');
+        if (gen !== panelGen) return;   // 已有更新的请求，丢弃本次响应
+        if (!res.success) {
+            renderPanel(null);
+            return;
+        }
+        renderPanel(res.data || null);
+    }
+
+    // renderPanel 渲染面板数据。
+    function renderPanel(panel) {
+        elPanelSections.innerHTML = '';
+
+        if (!panel) {
+            const empty = document.createElement('div');
+            empty.className = 'panel-empty';
+            empty.innerText = '暂无内容';
+            elPanelSections.appendChild(empty);
+            elPanelInfoTitle.innerText = '未选择文件';
+            elPanelInfoSub.innerText = '';
             return;
         }
 
-        const loading = document.createElement('div');
-        loading.innerText = '加载中...';
-        imgBox.appendChild(loading);
+        // --- 区域 ---
+        (panel.sections || []).forEach(sec => {
+            // Visible=false → 整块不渲染，不占位、不留空白（§3.5）
+            if (!sec.visible) return;
 
-        const res = await callBackend('GetCardPreview', item.id);
-        // 期间用户又切换了焦点，则丢弃本次结果，避免旧图覆盖新图
-        if (seq !== previewSeq) return;
+            const section = document.createElement('div');
+            section.className = 'panel-section';
 
-        const data = (res && res.data) || {};
+            // 标题行：左标题 + 右计数
+            const head = document.createElement('div');
+            head.className = 'panel-section-head';
+            const title = document.createElement('span');
+            title.className = 'panel-section-title';
+            title.innerText = sec.title;
+            head.appendChild(title);
 
-        imgBox.innerHTML = '';
-        if (res.success && data.dataUri) {
-            const img = document.createElement('img');
-            img.src = data.dataUri;
-            img.alt = item.name;
-            imgBox.appendChild(img);
-        } else {
-            const msg = document.createElement('div');
-            msg.innerText = data.message ? ('无法预览\n' + data.message) : '无法预览';
-            imgBox.appendChild(msg);
-        }
+            const count = document.createElement('span');
+            count.className = 'panel-section-count';
+            count.innerText = sec.total + (sec.id === 'cards' ? ' 张' : (sec.id === 'plugins' ? ' 个' : ' 个'));
+            head.appendChild(count);
+            section.appendChild(head);
 
-        const names = item.modNames || [];
-        document.getElementById('preview-mods').innerHTML = names.length
-            ? names.join('<br>')
-            : '无 Zipmod 依赖';
-    }
-
-    // renderFolderPreview 渲染文件夹预览：统计 + 2x2 窗格。
-    async function renderFolderPreview(item, seq) {
-        const imgBox = document.getElementById('preview-img');
-        imgBox.innerHTML = '';
-        imgBox.style.display = 'block';
-        imgBox.style.width = '100%';
-        imgBox.style.height = 'auto';
-
-        const loading = document.createElement('div');
-        loading.innerText = '加载中...';
-        imgBox.appendChild(loading);
-
-        const res = await callBackend('GetFolderPreview', item.id);
-        if (seq !== previewSeq) return;
-
-        const data = (res && res.data) || {};
-        const stats = data.stats || {};
-        const previews = data.previews || [];
-
-        imgBox.innerHTML = '';
-        const wrap = document.createElement('div');
-        wrap.className = 'folder-preview';
-
-        // 统计摘要
-        const statBox = document.createElement('div');
-        statBox.className = 'folder-stats';
-        statBox.innerHTML =
-            `子文件夹 <b>${stats.subfolderCount || 0}</b> 个<br>` +
-            `卡片 <b>${stats.cardCount || 0}</b> 张<br>` +
-            `共 <b>${stats.totalFiles || 0}</b> 个文件 (${formatSize(stats.totalSize || 0)})`;
-        wrap.appendChild(statBox);
-
-        // 2x2 窗格：最多 3 个子文件夹 + 1 个「还有 xxx」
-        const grid = document.createElement('div');
-        grid.className = 'preview-grid';
-
-        previews.forEach(p => {
-            const cell = document.createElement('div');
-            cell.className = 'preview-cell';
-            if (p.dataUri) {
-                const img = document.createElement('img');
-                img.src = p.dataUri;
-                img.alt = p.name;
-                cell.appendChild(img);
+            // 格子
+            const tiles = sec.tiles || [];
+            if (sec.layout === 'list') {
+                section.appendChild(renderPluginList(tiles));
+            } else {
+                const grid = document.createElement('div');
+                grid.className = 'panel-grid';
+                tiles.forEach(t => grid.appendChild(renderTile(t, sec)));
+                section.appendChild(grid);
             }
-            const nm = document.createElement('div');
-            nm.className = 'cell-name';
-            nm.innerText = p.name;
-            cell.appendChild(nm);
-            const ct = document.createElement('div');
-            ct.className = 'cell-count';
-            ct.innerText = p.count + ' 个文件';
-            cell.appendChild(ct);
-            grid.appendChild(cell);
+
+            // 空态：非空且 Visible=true 时显示
+            if (sec.total === 0 && sec.empty) {
+                const empty = document.createElement('div');
+                empty.className = 'panel-empty';
+                empty.innerText = sec.empty;
+                section.appendChild(empty);
+            }
+
+            elPanelSections.appendChild(section);
         });
 
-        const remaining = data.remainingFolders || [];
-        if (remaining.length > 0) {
-            const cell = document.createElement('div');
-            cell.className = 'preview-cell more';
-            const nm = document.createElement('div');
-            nm.className = 'cell-name';
-            nm.innerText = '还有 ' + remaining.length + ' 个子文件夹\n' + remaining.join('\n');
-            cell.appendChild(nm);
-            grid.appendChild(cell);
+        // 两区都不可见 → 统一空态
+        const anyVisible = (panel.sections || []).some(s => s.visible);
+        if (!anyVisible) {
+            const empty = document.createElement('div');
+            empty.className = 'panel-empty';
+            empty.innerText = '此文件夹为空';
+            elPanelSections.appendChild(empty);
         }
 
-        wrap.appendChild(grid);
-        imgBox.appendChild(wrap);
-        document.getElementById('preview-mods').innerHTML = '';
+        // --- 信息栏 ---
+        const focusInfo = panel.focus || {};
+        elPanelInfoTitle.innerText = focusInfo.name || '未选择文件';
+        const info = focusInfo.info || '';
+        elPanelInfoSub.innerText = info;
+        elPanelInfoSub.classList.toggle('panel-info-warn', info.includes('无法识别 GUID'));
     }
 
-    function clearPreview() {
-        const imgBox = document.getElementById('preview-img');
-        imgBox.innerHTML = '暂无预览';
-        imgBox.style.display = 'flex';
-        imgBox.style.width = '150px';
-        imgBox.style.height = '200px';
-        document.getElementById('preview-title').innerText = '未选择文件';
-        document.getElementById('preview-mods').innerHTML = '';
+    // renderTile 渲染一个格子。
+    function renderTile(tile, sec) {
+        const cell = document.createElement('div');
+        cell.className = 'panel-cell';
+        if (tile.selected) cell.classList.add('is-selected');
+        cell.dataset.abs = tile.abs || '';
+        cell.dataset.thumbKey = tile.thumbKey || '';
+
+        if (tile.kind === 'more') {
+            // "还有 N 个" 格
+            cell.classList.add('is-more');
+            const more = document.createElement('div');
+            more.className = 'more-label';
+            more.innerText = tile.name;
+            cell.appendChild(more);
+            return cell;
+        }
+
+        // 缩略图
+        const thumb = document.createElement('div');
+        thumb.className = 'thumb';
+        const cached = tile.thumbKey ? panelThumbs.get(tile.thumbKey) : null;
+        if (tile.thumb) {
+            panelThumbs.set(tile.thumbKey, tile.thumb);
+            const img = document.createElement('img');
+            img.src = tile.thumb;
+            thumb.appendChild(img);
+        } else if (cached) {
+            const img = document.createElement('img');
+            img.src = cached;
+            thumb.appendChild(img);
+        } else {
+            // 骨架格：尺寸已定，先占位
+            thumb.classList.add('is-pending');
+            thumb.innerText = tile.kind === 'plugin' ? '🔌' : (tile.kind === 'folder' ? '📁' : '🖼️');
+        }
+        cell.appendChild(thumb);
+
+        // 标题
+        const cap = document.createElement('div');
+        cap.className = 'caption';
+        cap.innerText = tile.name || '';
+        cap.title = tile.name || '';
+        cell.appendChild(cap);
+
+        // 副标签：文件夹格显示"N 个文件"，卡片格为空
+        if (tile.badge) {
+            const badge = document.createElement('div');
+            badge.className = 'caption';
+            badge.style.color = 'var(--text-3)';
+            badge.innerText = tile.badge;
+            cell.appendChild(badge);
+        }
+
+        // 点击 → 聚焦该条目
+        cell.onclick = () => {
+            if (!tile.abs) return;
+            focusByAbs(tile.abs);
+        };
+        return cell;
     }
 
-    // ---------------------------------------------------------------------
-    // 列表渲染（沿用 path 字段做多级目录匹配）
-    // ---------------------------------------------------------------------
+    // renderPluginList 渲染插件列表（1 列行式）。
+    function renderPluginList(tiles) {
+        const list = document.createElement('div');
+        list.className = 'panel-list';
+        tiles.forEach(t => {
+            const row = document.createElement('div');
+            row.className = 'panel-list-row';
+            const ico = document.createElement('span');
+            ico.className = 'ico';
+            ico.innerText = t.kind === 'more' ? '⋯' : '🔌';
+            row.appendChild(ico);
 
-    // syncSelectAll 同步「全选」复选框状态。
-    //
-    // 全选语义 = 当前目录下的**所有可见条目**（文件夹 + 文件 + 隐藏项）。
-    // 历史 bug：只统计 type !== 'folder'，导致 `female/` 这类全是文件夹的
-    // 根目录下全选复选框被禁用（灰掉不可用）。
-    function syncSelectAll(side) {
-        const isLeft = side === 'left';
-        const nodes = isLeft ? leftNodes : rightNodes;
-        const path = isLeft ? leftCurrentPath : rightCurrentPath;
-        const selectedSet = isLeft ? leftSelected : rightSelected;
-        const elSelectAll = isLeft ? elSelectAllLeft : elSelectAllRight;
+            const txt = document.createElement('div');
+            txt.className = 'txt';
+            const nm = document.createElement('div');
+            nm.className = 'nm';
+            nm.innerText = t.name || '';
+            txt.appendChild(nm);
+            if (t.badge) {
+                const sub = document.createElement('div');
+                sub.className = 'sub';
+                sub.innerText = t.badge;
+                txt.appendChild(sub);
+            }
+            row.appendChild(txt);
 
-        const rows = nodes.filter(n => n.path === path);
-        const total = rows.length;
-        const picked = rows.filter(n => isItemSelected(side, n)).length;
-
-        elSelectAll.disabled = total === 0;
-        elSelectAll.checked = total > 0 && picked === total;
-        // 三态：部分选中
-        elSelectAll.indeterminate = picked > 0 && picked < total;
+            if (t.kind !== 'more') {
+                row.title = t.abs || '';
+                row.onclick = () => showZipmodPluginDetail(t.abs);
+            }
+            list.appendChild(row);
+        });
+        return list;
     }
 
-    // collectDescendants 收集某个文件夹及其全部子孙节点的 id。
-    //
-    // 节点用 path 表示所在目录，因此子孙的 path 必然以该文件夹的
-    // 「父路径 + 文件夹名」开头。
+    // focusByAbs 按绝对路径聚焦某个条目（九宫格点击时用）。
+    function focusByAbs(abs) {
+        const side = panelSide;
+        const nodes = side === 'left' ? leftNodes : rightNodes;
+        const item = nodes.find(n => n.id === abs);
+        if (!item) {
+            // 不在当前列表内（例如 zipmod 引用了别处的卡片）→ 仍刷新预览
+            renderFocusExternal(abs);
+            return;
+        }
+        setFocusByID(side, abs);
+    }
+
+    // renderFocusExternal 焦点不在当前列表时（跨目录引用），仅更新信息栏。
+    function renderFocusExternal(abs) {
+        elPanelInfoTitle.innerText = abs.split(/[\\/]/).pop();
+        elPanelInfoSub.innerText = abs;
+    }
+
+    // showZipmodPluginDetail 展示插件的命中详情。
+    async function showZipmodPluginDetail(abs) {
+        const res = await callBackend('GetZipmodDetail', currentZipmodGuid());
+        if (!res.success) {
+            showAlert(res.message || '无法获取详情。');
+            return;
+        }
+        const d = res.data || {};
+        const plugins = d.plugins || [];
+        const target = plugins.find(p => p.abs === abs);
+        if (!target) {
+            showAlert('未找到该插件的详情。');
+            return;
+        }
+        const html = `<div>${escapeHtml(target.abs)}</div>
+            <div style="margin-top:8px;">命中方式：<b>${escapeHtml(target.hitMode || '未知')}</b></div>
+            <div class="modal-list">${(target.guids || []).map(g => `<div>${escapeHtml(g)}</div>`).join('')}</div>`;
+        openModal('插件命中详情', html, [{ label: '知道了', kind: 'primary' }]);
+    }
+
+    // currentZipmodGuid 返回当前焦点 zipmod 的 GUID。
+    function currentZipmodGuid() {
+        const focus = panelSide === 'left' ? leftFocus : rightFocus;
+        if (!focus) return '';
+        return focus.guid || '';
+    }
+
+    function isInteractive(target) {
+        return !!(target && target.closest && target.closest('input, button, a, .row-action'));
+    }
+
+    function findNodeByID(side, id) {
+        const nodes = side === 'left' ? leftNodes : rightNodes;
+        return nodes.find(n => n.id === id) || null;
+    }
+
     function collectDescendants(nodes, item) {
         const ids = [item.id];
         // 该文件夹的**完整相对路径**（父目录 + 文件夹名）
@@ -723,9 +1070,6 @@
         return ids;
     }
 
-    // setItemSelected 设置某个节点的勾选状态。
-    //
-    // 勾选文件夹时自动级联勾选其子文件夹与文件；取消时同样级联取消。
     function setItemSelected(side, item, checked) {
         const isLeft = side === 'left';
         const nodes = isLeft ? leftNodes : rightNodes;
@@ -741,11 +1085,6 @@
         });
     }
 
-    // isItemSelected 判断节点是否处于勾选状态。
-    //
-    // 文件夹：自身与全部子孙都被勾选才算勾上。
-    // 注意不能要求 targets.length > 1 —— 空文件夹（无子孙）的 targets 只有自己，
-    // 那样它将永远无法被判为已勾选（历史 bug：全选时部分文件夹不显示勾选）。
     function isItemSelected(side, item) {
         const isLeft = side === 'left';
         const nodes = isLeft ? leftNodes : rightNodes;
@@ -758,19 +1097,21 @@
         return targets.every(id => selectedSet.has(id));
     }
 
-    // isInteractive 判断事件目标是否为交互控件（复选框/按钮/链接）。
-    //
-    // 统一用 closest 判定，避免直接引用变量导致块级作用域问题
-    // （历史 bug：const hideBtn 声明在 if 块内，块外引用抛 ReferenceError，
-    //   导致单击任何行都无响应）。
-    function isInteractive(target) {
-        return !!(target && target.closest && target.closest('input, button, a, .row-action'));
-    }
+    function syncSelectAll(side) {
+        const isLeft = side === 'left';
+        const nodes = isLeft ? leftNodes : rightNodes;
+        const path = isLeft ? leftCurrentPath : rightCurrentPath;
+        const selectedSet = isLeft ? leftSelected : rightSelected;
+        const elSelectAll = isLeft ? elSelectAllLeft : elSelectAllRight;
 
-    // findNodeByID 从节点列表中按 ID 查找条目。
-    function findNodeByID(side, id) {
-        const nodes = side === 'left' ? leftNodes : rightNodes;
-        return nodes.find(n => n.id === id) || null;
+        const rows = nodes.filter(n => n.path === path);
+        const total = rows.length;
+        const picked = rows.filter(n => isItemSelected(side, n)).length;
+
+        elSelectAll.disabled = total === 0;
+        elSelectAll.checked = total > 0 && picked === total;
+        // 三态：部分选中
+        elSelectAll.indeterminate = picked > 0 && picked < total;
     }
 
     function renderList(side) {
@@ -863,41 +1204,10 @@
         syncSelectAll(side);
     }
 
-    // focusTimers 各侧的焦点延迟计时器。
-    const focusTimers = { left: null, right: null };
-
-    // scheduleFocus 延迟设置焦点（等待双击序列结束）。
-    function scheduleFocus(side, id) {
-        if (focusTimers[side]) {
-            clearTimeout(focusTimers[side]);
-        }
-        focusTimers[side] = setTimeout(() => {
-            focusTimers[side] = null;
-            setFocusByID(side, id);
-        }, 220);
-    }
-
-    // setFocusByID 按 ID 设置焦点（事件委托下的唯一入口）。
-    function setFocusByID(side, id) {
-        const item = findNodeByID(side, id);
-        if (!item) return;
-        if (side === 'left') {
-            leftFocus = item;
-        } else {
-            rightFocus = item;
-        }
-        updatePreview(item);
-        renderList(side);
-    }
-
     function renderAll() {
         renderList('left');
         renderList('right');
     }
-
-    // ---------------------------------------------------------------------
-    // 数据加载
-    // ---------------------------------------------------------------------
 
     async function loadLeft() {
         let res;
@@ -958,11 +1268,142 @@
 
     async function refreshAll() {
         await Promise.all([loadLeft(), loadRight()]);
+        // 右栏跟随焦点侧刷新
+        refreshPanel();
     }
 
     // ---------------------------------------------------------------------
-    // 隔离 / 恢复
+    // 日志窗口（§3.6）
     // ---------------------------------------------------------------------
+
+    const elLogModal = document.getElementById('log-modal');
+    const elLogBody = document.getElementById('log-body');
+    const elLogFoot = document.getElementById('log-foot');
+    const elLogSearch = document.getElementById('log-search');
+
+    // logEntries 缓存的日志条目。
+    let logEntries = [];
+    let logSeq = 0;
+    let logLevel = 'all';
+    let logFollow = true;
+    // logModalOpen 日志窗口是否打开（决定是否即时重渲染）
+    let logModalOpen = false;
+
+    // openLogModal 打开日志窗口。
+    async function openLogModal() {
+        elLogModal.classList.add('show');
+        logModalOpen = true;
+        await reloadLogs();
+        scrollLogToBottom();
+    }
+
+    // closeLogModal 关闭日志窗口。
+    function closeLogModal() {
+        elLogModal.classList.remove('show');
+        logModalOpen = false;
+    }
+
+    // reloadLogs 从后端增量拉取日志。
+    async function reloadLogs() {
+        const res = await callBackend('GetLogs', logSeq, logLevel);
+        if (!res.success) return;
+        const d = res.data || {};
+        const entries = d.entries || [];
+        if (entries.length) {
+            logEntries = logEntries.concat(entries);
+            logSeq = d.seq || logSeq;
+        }
+        renderLogs();
+    }
+
+    // renderLogs 渲染日志列表（前端只负责渲染，不自己拼字符串）。
+    function renderLogs() {
+        const q = (elLogSearch.value || '').trim().toLowerCase();
+        const rows = logEntries.filter(e => {
+            if (logLevel !== 'all' && e.level !== logLevel) return false;
+            if (q && !String(e.msg || '').toLowerCase().includes(q)) return false;
+            return true;
+        });
+
+        elLogBody.innerHTML = '';
+        rows.forEach(e => {
+            const row = document.createElement('div');
+            row.className = 'log-row lv-' + (e.level || 'info');
+            const ts = document.createElement('span');
+            ts.className = 'ts';
+            ts.innerText = formatLogTime(e.ts);
+            const lv = document.createElement('span');
+            lv.className = 'lv';
+            lv.innerText = levelText(e.level);
+            const ms = document.createElement('span');
+            ms.className = 'ms';
+            ms.innerText = e.msg || '';
+            row.appendChild(ts); row.appendChild(lv); row.appendChild(ms);
+            elLogBody.appendChild(row);
+        });
+
+        const errors = logEntries.filter(e => e.level === 'error').length;
+        elLogFoot.innerText = `本次会话 ${logEntries.length} 条 · 错误 ${errors} 条`;
+    }
+
+    // formatLogTime 把毫秒时间戳格式化为 HH:MM:SS。
+    function formatLogTime(ts) {
+        if (!ts) return '';
+        const d = new Date(ts);
+        const p = n => String(n).padStart(2, '0');
+        return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    }
+
+    // levelText 把级别码转成中文。
+    function levelText(level) {
+        return { info: '信息', success: '成功', warn: '警告', error: '错误' }[level] || level || '';
+    }
+
+    // scrollLogToBottom 滚动到底部（跟随最新）。
+    function scrollLogToBottom() {
+        if (!logFollow) return;
+        elLogBody.scrollTop = elLogBody.scrollHeight;
+    }
+
+    // 监听滚动：滚到非底部则暂停跟随。
+    elLogBody.addEventListener('scroll', () => {
+        const nearBottom = elLogBody.scrollHeight - elLogBody.scrollTop - elLogBody.clientHeight < 24;
+        logFollow = nearBottom;
+    });
+
+    // 日志窗口交互
+    document.getElementById('btn-open-log').onclick = openLogModal;
+    document.getElementById('btn-log-close').onclick = closeLogModal;
+    elLogModal.addEventListener('click', (e) => {
+        if (e.target === elLogModal) closeLogModal();
+    });
+    document.getElementById('log-seg').addEventListener('click', async (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        logLevel = btn.dataset.level;
+        Array.from(document.getElementById('log-seg').children).forEach(b => b.classList.toggle('on', b === btn));
+        await reloadLogs();
+    });
+    elLogSearch.addEventListener('input', renderLogs);
+    document.getElementById('btn-log-copy').onclick = async () => {
+        const text = logEntries.map(e => `${formatLogTime(e.ts)} [${levelText(e.level)}] ${e.msg}`).join('\n');
+        try {
+            await navigator.clipboard.writeText(text);
+            toast('日志已复制到剪贴板', 'success');
+        } catch (e) {
+            showAlert('复制失败：' + e);
+        }
+    };
+    document.getElementById('btn-log-export').onclick = () => {
+        const text = logEntries.map(e => `${formatLogTime(e.ts)} [${levelText(e.level)}] ${e.msg}`).join('\n');
+        const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'kks-log-' + Date.now() + '.txt';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        toast('日志已导出', 'success');
+    };
 
     // ---------------------------------------------------------------------
     // 对话框体系（§11.6）
@@ -1071,7 +1512,13 @@
         if (e.target === elModalMask) closeModal();
     });
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && elModalMask.classList.contains('show')) {
+        if (e.key !== 'Escape') return;
+        // 日志窗口优先关闭（它是独立模态）
+        if (elLogModal && elLogModal.classList.contains('show')) {
+            closeLogModal();
+            return;
+        }
+        if (elModalMask.classList.contains('show')) {
             closeModal();
         }
     });
@@ -1336,7 +1783,7 @@
             return;
         }
         const result = res.data || {};
-        renderLogs(result.logs);
+        renderOpLogs(result.logs);
         if (result.failedCount > 0) {
             log('粘贴存在失败项，请查看日志。', 'warn');
         } else {
@@ -1374,7 +1821,7 @@
             return;
         }
         const result = res.data || {};
-        renderLogs(result.logs);
+        renderOpLogs(result.logs);
         log(res.message || '隐藏完成。', 'success');
         await refreshAll();
     }
@@ -1396,13 +1843,17 @@
             return;
         }
         const result = res.data || {};
-        renderLogs(result.logs);
+        renderOpLogs(result.logs);
         log(res.message || '恢复完成。', 'success');
         leftSelected.clear();
         await refreshAll();
     }
 
-    function renderLogs(logs) {
+    // renderOpLogs 把操作结果里的日志条目写进前端日志框（同时会进后端环形缓冲）。
+    //
+    // 注意：这里只做「即时的界面反馈」，完整历史在后端环形缓冲里，
+    // 通过日志窗口（§3.6）查看。
+    function renderOpLogs(logs) {
         (logs || []).forEach(entry => {
             const level = entry.level || 'info';
             const type = level === 'success' ? 'success'
@@ -1428,11 +1879,11 @@
             return;
         }
         const result = res.data || {};
-        renderLogs(result.logs);
+        renderOpLogs(result.logs);
         log(`隔离完成：资源 ${result.movedCards || 0} 个，MOD ${result.movedMods || 0} 个，保留 MOD ${result.keptMods || 0} 个。`, 'success');
 
         leftSelected.clear();
-        clearPreview();
+        resetPanel();
         leftFocus = null;
         await refreshAll();
     }
@@ -1451,11 +1902,11 @@
             return;
         }
         const result = res.data || {};
-        renderLogs(result.logs);
+        renderOpLogs(result.logs);
         log(`恢复完成：资源 ${result.restoredCards || 0} 个，MOD ${result.restoredMods || 0} 个。`, 'success');
 
         rightSelected.clear();
-        clearPreview();
+        resetPanel();
         rightFocus = null;
         await refreshAll();
     }
@@ -1481,7 +1932,7 @@
         leftCurrentPath = ''; rightCurrentPath = '';
         leftSelected.clear(); rightSelected.clear();
         leftFocus = null; rightFocus = null;
-        clearPreview();
+        resetPanel();
         syncModeButtons();
         renderAll();
         refreshAll();
@@ -1491,7 +1942,7 @@
     document.getElementById('btn-reset').onclick = () => {
         leftSelected.clear(); rightSelected.clear();
         leftFocus = null; rightFocus = null;
-        clearPreview();
+        resetPanel();
         renderAll();
         log('已清除所有勾选。');
     };
@@ -1606,6 +2057,29 @@
             log(d.message || '扫描完成。', 'success');
             refreshAll();
         });
+        // 缩略图批量补图（§10.3）：按 thumbKey 局部替换 <img src>，
+        // **不重渲染整个面板**。
+        const handleThumbs = (e) => {
+            const payload = (e && e.payload) ? e.payload : e;
+            const list = Array.isArray(payload) ? payload : [payload];
+            if (!list.length) return;
+            list.forEach(r => {
+                if (!r || !r.thumbKey || !r.dataUri) return;
+                panelThumbs.set(r.thumbKey, r.dataUri);
+                const cells = document.querySelectorAll(`.panel-cell[data-thumb-key="${r.thumbKey}"]`);
+                cells.forEach(cell => {
+                    const thumb = cell.querySelector('.thumb');
+                    if (!thumb) return;
+                    thumb.classList.remove('is-pending');
+                    thumb.innerHTML = '';
+                    const img = document.createElement('img');
+                    img.src = r.dataUri;
+                    thumb.appendChild(img);
+                });
+            });
+        };
+        window.__thumbHandler = handleThumbs;
+        window.runtime.EventsOn('thumb:ready', handleThumbs);
         window.runtime.EventsOn('scan:complete', (e) => {
             const d = e && e.payload ? e.payload : e;
             if (d.missingMods && d.missingMods.length) {
