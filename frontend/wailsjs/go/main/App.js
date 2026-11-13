@@ -46,6 +46,10 @@ export function GetLeftTreeData(arg1) {
   return window['go']['main']['App']['GetLeftTreeData'](arg1);
 }
 
+export function GetLogs(arg1, arg2) {
+  return window['go']['main']['App']['GetLogs'](arg1, arg2);
+}
+
 export function GetModsTreeData() {
   return window['go']['main']['App']['GetModsTreeData']();
 }

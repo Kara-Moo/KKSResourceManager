@@ -102,3 +102,83 @@ func TestConcurrentTreeReadOnly(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestConcurrentDeriveAndIndex 验证索引派生与读操作并发时无竞态。
+//
+// 场景：后台扫描（写索引、派生反向图）与前端读取树数据同时进行。
+// 这是阶段 1 引入 index 包后最容易出问题的地方。
+func TestConcurrentDeriveAndIndex(t *testing.T) {
+	env := newTestEnv(t)
+	m := env.manager
+
+	for i := 0; i < 30; i++ {
+		writeFile(t, env.femaleCard("card"+string(rune('a'+i%26))+".png"), "x")
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// 后台：反复扫描 + 派生
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.ScanAll(nil)
+			}
+		}
+	}()
+
+	// 后台：反复派生（模拟操作后重建索引）
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.mu.Lock()
+				m.rebuildDepIndex()
+				m.mu.Unlock()
+			}
+		}
+	}()
+
+	// 前台：读树、读依赖图
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.buildTree(m.SourceDir(ResourceKinds[0]), false)
+			}
+		}
+	}()
+
+	// 前台：读依赖判定
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.IsZipmodSafeToMove("some.guid")
+			}
+		}
+	}()
+
+	for i := 0; i < 100; i++ {
+		m.ScanAll(nil)
+	}
+	close(stop)
+	wg.Wait()
+}

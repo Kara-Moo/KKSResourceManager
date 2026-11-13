@@ -706,6 +706,58 @@
         elSelectAll.indeterminate = picked > 0 && picked < total;
     }
 
+    // collectDescendants 收集某个文件夹及其全部子孙节点的 id。
+    //
+    // 节点用 path 表示所在目录，因此子孙的 path 必然以该文件夹的
+    // 「父路径 + 文件夹名」开头。
+    function collectDescendants(nodes, item) {
+        const ids = [item.id];
+        // 该文件夹的**完整相对路径**（父目录 + 文件夹名）
+        const prefix = item.path ? `${item.path}/${item.name}` : item.name;
+        nodes.forEach(n => {
+            // 子孙的 path 必然等于 prefix 或以 prefix + '/' 开头
+            if (n.path === prefix || n.path.startsWith(prefix + '/')) {
+                ids.push(n.id);
+            }
+        });
+        return ids;
+    }
+
+    // setItemSelected 设置某个节点的勾选状态。
+    //
+    // 勾选文件夹时自动级联勾选其子文件夹与文件；取消时同样级联取消。
+    function setItemSelected(side, item, checked) {
+        const isLeft = side === 'left';
+        const nodes = isLeft ? leftNodes : rightNodes;
+        const selectedSet = isLeft ? leftSelected : rightSelected;
+
+        const targets = (item.type === 'folder')
+            ? collectDescendants(nodes, item)
+            : [item.id];
+
+        targets.forEach(id => {
+            if (checked) selectedSet.add(id);
+            else selectedSet.delete(id);
+        });
+    }
+
+    // isItemSelected 判断节点是否处于勾选状态。
+    //
+    // 文件夹：自身与全部子孙都被勾选才算勾上。
+    // 注意不能要求 targets.length > 1 —— 空文件夹（无子孙）的 targets 只有自己，
+    // 那样它将永远无法被判为已勾选（历史 bug：全选时部分文件夹不显示勾选）。
+    function isItemSelected(side, item) {
+        const isLeft = side === 'left';
+        const nodes = isLeft ? leftNodes : rightNodes;
+        const selectedSet = isLeft ? leftSelected : rightSelected;
+
+        if (item.type !== 'folder') {
+            return selectedSet.has(item.id);
+        }
+        const targets = collectDescendants(nodes, item);
+        return targets.every(id => selectedSet.has(id));
+    }
+
     // isInteractive 判断事件目标是否为交互控件（复选框/按钮/链接）。
     //
     // 统一用 closest 判定，避免直接引用变量导致块级作用域问题
@@ -809,6 +861,20 @@
 
         container.replaceChildren(frag);
         syncSelectAll(side);
+    }
+
+    // focusTimers 各侧的焦点延迟计时器。
+    const focusTimers = { left: null, right: null };
+
+    // scheduleFocus 延迟设置焦点（等待双击序列结束）。
+    function scheduleFocus(side, id) {
+        if (focusTimers[side]) {
+            clearTimeout(focusTimers[side]);
+        }
+        focusTimers[side] = setTimeout(() => {
+            focusTimers[side] = null;
+            setFocusByID(side, id);
+        }, 220);
     }
 
     // setFocusByID 按 ID 设置焦点（事件委托下的唯一入口）。
@@ -1048,7 +1114,11 @@
             // 其它交互控件不触发焦点切换
             if (isInteractive(e.target)) return;
 
-            setFocusByID(side, row.dataset.id);
+            // 延迟到下一帧再重渲染。
+            // 否则单击会立即 replaceChildren 重建 DOM，
+            // 导致随后的 dblclick 事件找不到原来的行（双击进不去文件夹）。
+            const id = row.dataset.id;
+            scheduleFocus(side, id);
         });
 
         // 双击：文件夹进入
@@ -1057,6 +1127,11 @@
             if (!row) return;
             if (isInteractive(e.target)) return;
             if (row.dataset.type !== 'folder') return;
+            // 双击已确认，取消待执行的单击焦点切换
+            if (focusTimers[side]) {
+                clearTimeout(focusTimers[side]);
+                focusTimers[side] = null;
+            }
             const curPath = side === 'left' ? leftCurrentPath : rightCurrentPath;
             const newPath = curPath ? `${curPath}/${row.dataset.name}` : row.dataset.name;
             if (side === 'left') leftCurrentPath = newPath;

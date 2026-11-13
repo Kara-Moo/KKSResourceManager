@@ -94,7 +94,19 @@ window.go = { main: { App: mockApp } };
 window.runtime = { EventsOn: () => {} };
 `;
 
-const browser = await chromium.launch();
+// 优先使用本机已安装的 Edge/Chrome，避免下载 Playwright 自带内核
+let browser;
+for (const ch of ['msedge', 'chrome']) {
+  try {
+    browser = await chromium.launch({ channel: ch });
+    console.log('使用浏览器:', ch);
+    break;
+  } catch (e) { /* 试下一个 */ }
+}
+if (!browser) {
+  browser = await chromium.launch();
+  console.log('使用浏览器: bundled chromium');
+}
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 
 // 收集 JS 错误 —— 任何未捕获异常都判定为失败
@@ -103,14 +115,22 @@ page.on('pageerror', (e) => jsErrors.push(e.message));
 
 await page.addInitScript(mockScript);
 await page.goto('file://' + htmlPath.replace(/\\/g, '/'));
-await page.waitForTimeout(400);
+await page.waitForTimeout(300);
+
+// 应用启动后列表为空（等待用户选根目录），测试先主动加载一次数据
+await page.evaluate(async () => {
+  await loadLeft();
+  await loadRight();
+});
+await page.waitForTimeout(300);
 
 console.log('\n【1】单击行 → 焦点高亮 + 预览刷新（§3.1）');
 {
   const before = jsErrors.length;
   const row = page.locator('#left-list .list-item').first();
   await row.click();
-  await page.waitForTimeout(200);
+  // 单击焦点是延迟的（等待双击序列结束），需等过延迟窗口
+  await page.waitForTimeout(400);
 
   check('单击不抛 JS 异常', jsErrors.length === before, jsErrors.slice(before).join('; '));
   const focused = await page.locator('#left-list .list-item.is-focused').count();
@@ -123,7 +143,7 @@ console.log('\n【2】右键行 → 菜单出现且不消失（§3.2）');
 {
   const row = page.locator('#left-list .list-item').nth(1);
   await row.click({ button: 'right' });
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(400);
 
   const visible = await page.locator('#context-menu.show').count();
   check('右键后菜单可见', visible === 1, `实际 ${visible} 个`);
@@ -139,14 +159,16 @@ console.log('\n【3】全选复选框在纯文件夹目录可用（§3.4）');
   const disabled = await page.locator('#select-all-left').isDisabled();
   check('全选复选框未被禁用', !disabled);
 
-  await page.locator('#select-all-left').check();
-  await page.waitForTimeout(200);
+  // 用 click 而非 check：indeterminate 状态下 check() 的语义不适用
+  await page.locator('#select-all-left').click();
+  await page.waitForTimeout(250);
   const checked = await page.locator('#left-list .list-item input[type=checkbox]:checked').count();
-  check('全选后所有条目被勾选', checked >= 2, `实际勾选 ${checked} 个`);
+  const total = await page.locator('#left-list .list-item').count();
+  check('全选后所有条目被勾选', checked === total && total >= 2, `勾选 ${checked}/${total}`);
 
   // 取消
-  await page.locator('#select-all-left').uncheck();
-  await page.waitForTimeout(200);
+  await page.locator('#select-all-left').click();
+  await page.waitForTimeout(250);
   const after = await page.locator('#left-list .list-item input[type=checkbox]:checked').count();
   check('取消全选后全部取消', after === 0, `实际 ${after} 个`);
 }

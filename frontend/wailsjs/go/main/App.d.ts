@@ -23,6 +23,8 @@ export function GetKKSInfo():Promise<string>;
 
 export function GetLeftTreeData(arg1:string):Promise<string>;
 
+export function GetLogs(arg1:number,arg2:string):Promise<string>;
+
 export function GetModsTreeData():Promise<string>;
 
 export function GetRightTreeData(arg1:string):Promise<string>;

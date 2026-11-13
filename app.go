@@ -548,6 +548,10 @@ func (m *Manager) buildTreeLocked(root string, isDel bool) []TreeNode {
 		return nodes
 	}
 
+	// 一次后序遍历收集整棵树的文件夹统计。
+	// §5.6：旧实现对每个文件夹单独递归统计，等于遍历 N 次全树（O(n²)）。
+	agg := newStatsAggregator(root)
+
 	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -574,7 +578,7 @@ func (m *Manager) buildTreeLocked(root string, isDel bool) []TreeNode {
 				Name:        info.Name(),
 				Type:        "folder",
 				Path:        filepath.ToSlash(parent),
-				FolderStats: computeFolderStats(path),
+				FolderStats: agg.toFolderStats(path),
 			})
 			return nil
 		}
