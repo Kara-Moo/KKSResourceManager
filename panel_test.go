@@ -596,3 +596,95 @@ func TestPanelFolderFocusStillGrid(t *testing.T) {
 		t.Errorf("文件夹焦点应有 A/B 两区，实际 %d", len(panel.Sections))
 	}
 }
+
+// TestPanelZipmodFullList zipmod 引用必须全量显示，不出现「还有 N」（FIX-03）。
+func TestPanelZipmodFullList(t *testing.T) {
+	env := newTestEnv(t)
+	m := env.manager
+
+	modPath := filepath.Join(m.ModsDir(), "many.zipmod")
+	writeFile(t, modPath, "mod")
+	m.ZipmodDB["many.guid"] = modPath
+	m.guidOfPath[modPath] = "many.guid"
+
+	// 构造 33 个引用
+	refs := make([]string, 0, 33)
+	for i := 0; i < 33; i++ {
+		refs = append(refs, env.femaleCard(fmt.Sprintf("card_%02d.png", i)))
+	}
+	m.GlobalDepMap["many.guid"] = refs
+
+	panel, err := m.BuildPanel("left", "zipmod", "", modPath)
+	if err != nil {
+		t.Fatalf("构建面板失败: %v", err)
+	}
+
+	secA := panel.Sections[0]
+	if secA.Total != 33 {
+		t.Errorf("总数应为 33，实际 %d", secA.Total)
+	}
+	if len(secA.Tiles) != 33 {
+		t.Errorf("应渲染 33 个格子，实际 %d", len(secA.Tiles))
+	}
+	if secA.More != 0 {
+		t.Errorf("zipmod 不应出现「还有」格，实际 more=%d", secA.More)
+	}
+	if !secA.Lazy {
+		t.Error("zipmod 区域应标记 Lazy=true（前端按可视区加载）")
+	}
+	// 不应预请求缩略图
+	for _, tile := range secA.Tiles {
+		if tile.Thumb != "" {
+			t.Error("zipmod 全量列表不应在后端预生成缩略图")
+			break
+		}
+		if tile.ThumbKey == "" {
+			t.Error("每个格子仍应带 thumbKey，供前端懒加载")
+			break
+		}
+	}
+}
+
+// TestPanelZipmodOrderStable 全量列表顺序必须稳定（自然序，同名按路径）。
+func TestPanelZipmodOrderStable(t *testing.T) {
+	env := newTestEnv(t)
+	m := env.manager
+
+	modPath := filepath.Join(m.ModsDir(), "ord.zipmod")
+	writeFile(t, modPath, "mod")
+	m.ZipmodDB["ord.guid"] = modPath
+	m.guidOfPath[modPath] = "ord.guid"
+
+	m.GlobalDepMap["ord.guid"] = []string{
+		env.femaleCard("22.7.10/2.png"),
+		env.femaleCard("22.7.9/2.png"),
+		env.femaleCard("22.7.9/10.png"),
+		env.femaleCard("22.7.9/1.png"),
+	}
+
+	names := func() []string {
+		panel, err := m.BuildPanel("left", "zipmod", "", modPath)
+		if err != nil {
+			t.Fatalf("构建面板失败: %v", err)
+		}
+		out := make([]string, 0, len(panel.Sections[0].Tiles))
+		for _, tile := range panel.Sections[0].Tiles {
+			out = append(out, tile.Name)
+		}
+		return out
+	}
+
+	first := names()
+	second := names()
+	if strings.Join(first, "|") != strings.Join(second, "|") {
+		t.Errorf("两次构建顺序不一致：%v vs %v", first, second)
+	}
+
+	// 自然序：1 < 2 < 10（字符串序会把 10 排到 2 前面，那是错的）
+	// 两个 2.png 相邻，再由全路径做稳定并列决胜
+	want := []string{"1.png", "2.png", "2.png", "10.png"}
+	got := strings.Join(first, ",")
+	if got != strings.Join(want, ",") {
+		t.Errorf("自然序不符：\n实际 %s\n期望 %s", got, strings.Join(want, ","))
+	}
+}

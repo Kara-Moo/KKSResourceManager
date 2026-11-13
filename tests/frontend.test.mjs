@@ -58,6 +58,7 @@ const hiddenTree = {
 /** 注入模拟 Wails 运行时（在页面脚本执行前） */
 const mockScript = `
 window.__calls = [];
+window.__thumbBatchCalls = [];
 const mockApp = {
   GetLeftTreeData: (mode) => {
     window.__calls.push(['GetLeftTreeData', mode]);
@@ -125,6 +126,14 @@ const mockApp = {
   ] }),
   CmdTrashRestore: (rels) => JSON.stringify({ success: true, message: 'ok', data: { restored: rels.length, skipped: 0, conflicts: [] } }),
   CmdTrashPurge: (rels, text) => JSON.stringify({ success: true, message: 'ok', data: { purged: rels.length, errors: [] } }),
+  GetThumbBatch: (paths) => {
+    window.__thumbBatchCalls.push(paths.slice());
+    return JSON.stringify({ success: true, message: '', data: paths.map(p => ({
+      thumbKey: 'key-' + p.split(/[\\/]/).pop(),
+      dataUri: 'data:image/jpeg;base64,TB',
+      pending: false,
+    })) });
+  },
   OpenFolderInExplorer: (abs) => JSON.stringify({ success: true, message: 'ok', data: null }),
   GetZipmodDetail: (guid) => JSON.stringify({ success: true, message: '', data: { guid, path: 'C:/x.zipmod', base: 'x.zipmod', size: 100, cards: [], plugins: [], refCards: 0, refPlugins: 0, parseErr: '' } }),
   GetFolderPreview: (p) => JSON.stringify({ success: true, message: '', data: {
@@ -670,6 +679,70 @@ console.log('\n【19】FIX-02：卡片焦点单张大图');
     return getComputedStyle(f.querySelector('img')).objectFit;
   });
   check('大图使用 contain（不裁切卡片）', aspect === 'contain', `实际 "${aspect}"`);
+}
+
+
+console.log('\n【20】FIX-03：zipmod 引用全量显示 + 懒加载');
+{
+  // 33 个引用，全部应渲染，且没有「还有 N」
+  await page.evaluate(() => {
+    const tiles = [];
+    for (let i = 0; i < 33; i++) {
+      tiles.push({
+        kind: 'card',
+        name: 'card_' + String(i).padStart(2, '0') + '.png',
+        rel: 'cards/card_' + i + '.png',
+        abs: 'C:/KK/female/cards/card_' + i + '.png',
+        badge: '',
+        thumbKey: 'key-card_' + i + '.png',
+        thumb: '',
+        thumbPreview: '',
+        pending: true,
+      });
+    }
+    window.__panelData = {
+      focus: { kind: 'mod', name: 'gyobobo.zipmod', abs: 'C:/KK/mods/gyobobo.zipmod', info: '被 33 个文件占用（卡片 33 / 插件 0）' },
+      sections: [
+        { id: 'cards', title: '使用此 zipmod 的卡片', layout: 'grid', total: 33, tiles, more: 0, moreLabel: '', visible: true, empty: '', lazy: true },
+        { id: 'plugins', title: '引用此 GUID 的插件', layout: 'list', total: 0, tiles: [], more: 0, moreLabel: '', visible: true, empty: '未被任何插件硬编码引用', lazy: false },
+      ],
+      gen: 20,
+    };
+    window.__thumbBatchCalls.length = 0;
+  });
+  await page.evaluate(async () => { await refreshPanel(); });
+  await page.waitForTimeout(600);
+
+  const cells = await page.locator('#panel-sections .panel-cell').count();
+  check('33 个引用渲染 33 个格子', cells === 33, `实际 ${cells} 个`);
+
+  const moreCells = await page.locator('#panel-sections .panel-cell.is-more').count();
+  check('zipmod 不出现「还有」格', moreCells === 0, `实际 ${moreCells} 个`);
+
+  const bodyText = await page.locator('#panel-sections').innerText();
+  check('页面文本不含「还有」', !bodyText.includes('还有'), `实际含"还有"`);
+
+  // 行数：33 格 / 3 列 = 11 行
+  const rows = await page.evaluate(() => {
+    const g = document.querySelector('#panel-sections .panel-grid');
+    if (!g) return 0;
+    const tops = new Set(Array.from(g.children).map(c => Math.round(c.getBoundingClientRect().top)));
+    return tops.size;
+  });
+  check('33 格排成 11 行', rows === 11, `实际 ${rows} 行`);
+
+  // 懒加载：应通过 GetThumbBatch 分批请求，而不是后端预生成
+  const calls = await page.evaluate(() => window.__thumbBatchCalls.length);
+  check('触发 GetThumbBatch 懒加载', calls >= 1, `实际 ${calls} 次`);
+
+  const maxBatch = await page.evaluate(() => {
+    return window.__thumbBatchCalls.reduce((m, b) => Math.max(m, b.length), 0);
+  });
+  check('每批请求 ≤12 个', maxBatch <= 12, `实际最大 ${maxBatch}`);
+
+  // 可视区先出图：首屏格子应有 img
+  const imgs = await page.locator('#panel-sections .panel-cell img').count();
+  check('可视区缩略图已补上', imgs >= 1, `实际 ${imgs} 个`);
 }
 
 await page.screenshot({ path: path.join(__dirname, '..', 'build', 'frontend-test.png'), fullPage: false });

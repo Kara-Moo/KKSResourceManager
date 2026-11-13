@@ -390,7 +390,15 @@ func (m *Manager) buildZipmodPanel(panel *Panel, focusAbs, focusKind string) Pan
 	if guid != "" {
 		refs = append(refs, m.GlobalDepMap[guid]...)
 	}
-	sort.Strings(refs)
+	// 排序必须稳定且符合直觉：先按文件名自然序（22.7.9 在 22.7.10 之前），
+	// 同名再按全路径。否则同一次刷新顺序会跳，用户会以为内容变了。
+	sort.Slice(refs, func(i, j int) bool {
+		bi, bj := filepath.Base(refs[i]), filepath.Base(refs[j])
+		if bi != bj {
+			return core.NaturalLess(bi, bj)
+		}
+		return refs[i] < refs[j]
+	})
 
 	secA.Total = len(refs)
 	secA.Visible = true
@@ -398,24 +406,28 @@ func (m *Manager) buildZipmodPanel(panel *Panel, focusAbs, focusKind string) Pan
 		// 零引用也是关键判断信息，必须显示
 		secA.Empty = "未被任何卡片引用（可作为「多余 zipmod」隔离）"
 	} else {
-		shown, more := tileCount(len(refs))
-		for i := 0; i < shown && i < len(refs); i++ {
-			p := refs[i]
-			t := Tile{
-				Kind: "card",
-				Name: filepath.Base(p),
-				Rel:  m.relOf(p),
-				Abs:  p,
-				Badge: "",
-			}
-			t.ThumbKey, t.Thumb, t.Pending = m.thumbRequest(p, true)
-			secA.Tiles = append(secA.Tiles, t)
+		// **全量返回，永不截断**（v2.2 FIX-03）。
+		//
+		// 规则差异的由来：文件夹九宫格是「概览」，194 张全铺开会卡死，所以要 8+more；
+		// zipmod 是「审计」—— 用户要确认这个 mod 到底被谁用了，省略就失去意义。
+		//
+		// 这里**不调用 thumbRequest**：500 张引用 = 500 次 os.Stat + 500 个队列任务，
+		// 切换焦点会瞬间打满队列，把真正需要的图挤到后面。
+		// 只给 thumbKey，前端按可视区懒加载（Section.Lazy=true）。
+		secA.Tiles = make([]Tile, 0, len(refs))
+		for _, p := range refs {
+			secA.Tiles = append(secA.Tiles, Tile{
+				Kind:     "card",
+				Name:     filepath.Base(p),
+				Rel:      m.relOf(p),
+				Abs:      p,
+				Badge:    "",
+				ThumbKey: preview.ThumbKey(p, m.fingerprintOf(p)),
+				Pending:  true,
+			})
 		}
-		if more > 0 {
-			secA.More = more
-			secA.MoreLabel = "还有 " + strconv.Itoa(more) + " 张角色卡"
-			secA.Tiles = append(secA.Tiles, Tile{Kind: "more", Name: secA.MoreLabel})
-		}
+		secA.More = 0
+		secA.Lazy = true
 	}
 
 	// --- 区域 B：引用它的插件 ---
@@ -431,7 +443,8 @@ func (m *Manager) buildZipmodPanel(panel *Panel, focusAbs, focusKind string) Pan
 	if len(plugins) == 0 {
 		secB.Empty = "未被任何插件硬编码引用"
 	} else {
-		shown, more := tileCount(len(plugins))
+		// 插件列表同样全量：zipmod 视角一律不省略（§3.3 决策表）
+		shown, more := len(plugins), 0
 		for i := 0; i < shown && i < len(plugins); i++ {
 			rel := plugins[i]
 			secB.Tiles = append(secB.Tiles, Tile{

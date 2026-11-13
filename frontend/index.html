@@ -1085,6 +1085,8 @@
                 grid.className = 'panel-grid';
                 tiles.forEach(t => grid.appendChild(renderTile(t, sec)));
                 section.appendChild(grid);
+                // zipmod 全量列表：只按可视区请求缩略图（v2.2 FIX-03）
+                if (sec.lazy) observeLazyCells(grid);
             }
 
             // 空态：非空且 Visible=true 时显示
@@ -1180,6 +1182,62 @@
             focusByAbs(tile.abs);
         };
         return cell;
+    }
+
+    // ---------------------------------------------------------------------
+    // 缩略图懒加载（v2.2 FIX-03）
+    //
+    // zipmod 的引用列表是**全量**的（可能 500 张）。若后端预请求，
+    // 等于 500 次 os.Stat + 500 个队列任务，切换焦点会瞬间打满队列。
+    // 所以后端只给 thumbKey，前端按可视区请求：初始只加载首屏一两行。
+    // ---------------------------------------------------------------------
+
+    let thumbObserver = null;
+
+    // ensureThumbObserver 返回共享的 IntersectionObserver。
+    function ensureThumbObserver() {
+        if (thumbObserver) return thumbObserver;
+        const root = document.getElementById('panel-scroll');
+        thumbObserver = new IntersectionObserver((entries) => {
+            const paths = [];
+            entries.forEach(en => {
+                if (!en.isIntersecting) return;
+                const cell = en.target;
+                if (cell.dataset.thumbLoaded === '1') return;
+                const abs = cell.dataset.abs;
+                if (!abs) return;
+                cell.dataset.thumbLoaded = '1';
+                paths.push(abs);
+                thumbObserver.unobserve(cell);
+            });
+            if (paths.length) requestThumbs(paths);
+        }, { root: root, rootMargin: '200px' });   // 预取一行
+        return thumbObserver;
+    }
+
+    // observeLazyCells 让容器内的格子进入视口时才请求缩略图。
+    function observeLazyCells(container) {
+        const ob = ensureThumbObserver();
+        container.querySelectorAll('.panel-cell[data-abs]').forEach(cell => {
+            if (!cell.dataset.abs) return;
+            if (!cell.dataset.thumbKey) return;   // 无键（如「还有」格）不加载
+            ob.observe(cell);
+        });
+    }
+
+    // requestThumbs 批量请求缩略图（每批 ≤12，避免一次压满队列）。
+    async function requestThumbs(paths) {
+        const BATCH = 12;
+        for (let i = 0; i < paths.length; i += BATCH) {
+            const batch = paths.slice(i, i + BATCH);
+            const res = await callBackend('GetThumbBatch', batch);
+            if (!res.success) continue;
+            const list = res.data || [];
+            list.forEach(r => {
+                if (!r || !r.thumbKey || !r.dataUri) return;
+                applyThumb(r.thumbKey, r.dataUri);
+            });
+        }
     }
 
     // applyThumb 把一张缩略图写进所有匹配的格子。
