@@ -2078,6 +2078,152 @@
     }
 
     // ---------------------------------------------------------------------
+    // zipmod 管理（v2.1 §7）—— 两阶段：Plan → 确认 → Commit
+    //
+    // 按钮在上一轮实现中只加了 HTML/CSS，没有绑定处理器（点了没反应）。
+    // 这里补完两个入口，避免留下 FIX-05 那类「静默失败」的死按钮。
+    // ---------------------------------------------------------------------
+
+    // planCheckedGUIDs 读出计划对话框里勾选的 GUID。
+    function planCheckedGUIDs(selector) {
+        return Array.from(document.querySelectorAll(selector))
+            .filter(el => el.checked)
+            .map(el => el.value);
+    }
+
+    // doPlanFixMissing 「修复缺失 zipmod」：先出计划，再确认执行。
+    async function doPlanFixMissing() {
+        const res = await callBackend('PlanFixMissing');
+        if (!res.success) {
+            showAlert(res.message || '无法生成修复计划。');
+            return;
+        }
+        const plan = res.data || {};
+        const rec = plan.recoverable || [];
+        const unrec = plan.unrecoverable || [];
+        if (!rec.length && !unrec.length) {
+            toast('没有缺失的 zipmod', 'success');
+            return;
+        }
+
+        let html = '';
+        if (rec.length) {
+            const fromDel = rec.filter(r => r.source === 'del-zipmod').length;
+            html += `<div class="plan-head"><span>可修复 ${rec.length} 个（共 ${formatSize(plan.totalBytes || 0) || '0 B'}）</span>` +
+                    `<span class="plan-sub">隔离区 ${fromDel} / 回收站 ${rec.length - fromDel}</span></div>`;
+            html += '<div class="plan-list">';
+            rec.forEach(r => {
+                html += `<label class="plan-item">` +
+                    `<input type="checkbox" class="fix-check" value="${escapeHtml(r.guid)}" checked>` +
+                    `<span class="txt"><span class="g">${escapeHtml(r.name || r.guid)}</span><br>` +
+                    `<span class="m">被 ${r.refCards || 0} 卡 + ${r.refPlugins || 0} 插件使用 · ${escapeHtml(r.source === 'deled' ? '回收站' : '隔离区')} → mods/</span></span>` +
+                    `</label>`;
+            });
+            html += '</div>';
+        }
+        if (unrec.length) {
+            html += `<div class="plan-head"><span class="plan-blocked">无法修复 ${unrec.length} 个（本地不存在，需重新下载）</span></div>`;
+            html += '<div class="plan-list">';
+            unrec.forEach(u => {
+                const sample = (u.sample || []).join('、');
+                html += `<div class="plan-item"><span class="txt"><span class="g">${escapeHtml(u.guid)}</span><br>` +
+                        `<span class="m">被 ${u.refCards || 0} 卡 + ${u.refPlugins || 0} 插件使用 · 例：${escapeHtml(sample)}</span></span></div>`;
+            });
+            html += '</div>';
+        }
+
+        openModal('修复缺失 zipmod', html, [
+            { label: '取消' },
+            {
+                label: `恢复选中（${rec.length}）`,
+                kind: 'primary',
+                onClick: async () => {
+                    const guids = planCheckedGUIDs('.fix-check');
+                    if (!guids.length) {
+                        toast('没有勾选任何项目', 'warn');
+                        return false;
+                    }
+                    const r = await callBackend('CommitFixMissing', guids);
+                    if (!r.success) {
+                        showAlert(r.message || '修复失败。');
+                        return;
+                    }
+                    const d = r.data || {};
+                    toast(`已恢复 ${d.restored || 0} 个 zipmod`, 'success');
+                    await refreshAll();
+                },
+            },
+        ]);
+    }
+
+    // doPlanIsolateExtra 「隔离多余 zipmod」：先出计划，再确认执行。
+    //
+    // 后端已按三条件严格筛选（无卡片引用 / 无插件引用 / 无其它 mod 依赖），
+    // 这里只负责把候选与「永不自动隔离」清单如实呈现给用户。
+    async function doPlanIsolateExtra() {
+        const res = await callBackend('PlanIsolateExtra');
+        if (!res.success) {
+            showAlert(res.message || '无法生成隔离计划。');
+            return;
+        }
+        const plan = res.data || {};
+        const candidates = plan.candidates || [];
+        const skipped = plan.skipped || [];
+        if (!candidates.length) {
+            toast('没有多余的 zipmod', 'success');
+            return;
+        }
+
+        let html = `<div class="plan-head"><span>将隔离 ${candidates.length} 个（共 ${formatSize(plan.totalBytes || 0) || '0 B'}）</span>` +
+                   `<span class="plan-sub">默认全选，可取消勾选</span></div>`;
+        html += '<div class="plan-list">';
+        candidates.forEach(c => {
+            html += `<label class="plan-item">` +
+                `<input type="checkbox" class="extra-check" value="${escapeHtml(c.guid)}" checked>` +
+                `<span class="txt"><span class="g">${escapeHtml(c.base || c.guid)}</span><br>` +
+                `<span class="m">${escapeHtml(formatSize(c.size || 0) || '0 B')} ${c.note ? '· ' + escapeHtml(c.note) : ''}</span></span>` +
+                `</label>`;
+        });
+        html += '</div>';
+
+        if (skipped.length) {
+            html += `<div class="plan-head"><span>永不自动隔离 ${skipped.length} 个</span></div>`;
+            html += '<div class="plan-list">';
+            skipped.forEach(k => {
+                html += `<div class="plan-item"><span class="txt"><span class="g">${escapeHtml(k.path || '')}</span><br>` +
+                        `<span class="m">${escapeHtml(k.reason || '')}</span></span></div>`;
+            });
+            html += '</div>';
+        }
+
+        openModal('隔离多余 zipmod', html, [
+            { label: '取消' },
+            {
+                label: `隔离选中（${candidates.length}）`,
+                kind: 'danger',
+                onClick: async () => {
+                    const guids = planCheckedGUIDs('.extra-check');
+                    if (!guids.length) {
+                        toast('没有勾选任何项目', 'warn');
+                        return false;
+                    }
+                    const r = await callBackend('CommitIsolateExtra', guids);
+                    if (!r.success) {
+                        showAlert(r.message || '隔离失败。');
+                        return;
+                    }
+                    const d = r.data || {};
+                    toast(`已隔离 ${d.isolated || 0} 个 zipmod`, 'success');
+                    await refreshAll();
+                },
+            },
+        ]);
+    }
+
+    document.getElementById('btn-fix-missing').onclick = guard(doPlanFixMissing);
+    document.getElementById('btn-isolate-extra').onclick = guard(doPlanIsolateExtra);
+
+    // ---------------------------------------------------------------------
     // 历史窗口（§8.4）
     // ---------------------------------------------------------------------
 

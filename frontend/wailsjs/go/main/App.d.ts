@@ -15,9 +15,15 @@ export function CmdUndo(arg1:string):Promise<string>;
 
 export function CommitDelete(arg1:Array<string>):Promise<string>;
 
+export function CommitFixMissing(arg1:Array<string>):Promise<string>;
+
+export function CommitIsolateExtra(arg1:Array<string>):Promise<string>;
+
 export function ExecuteIsolate(arg1:Array<string>,arg2:string):Promise<string>;
 
 export function ExecuteRestore(arg1:Array<string>,arg2:string):Promise<string>;
+
+export function GetBigPreview(arg1:string):Promise<string>;
 
 export function GetCardPreview(arg1:string):Promise<string>;
 
@@ -49,6 +55,8 @@ export function GetScanStatus():Promise<string>;
 
 export function GetThumbBatch(arg1:Array<string>):Promise<string>;
 
+export function GetThumbStats():Promise<string>;
+
 export function GetTrashTree():Promise<string>;
 
 export function GetZipmodDetail(arg1:string):Promise<string>;
@@ -57,9 +65,15 @@ export function HideFolders(arg1:Array<string>,arg2:string):Promise<string>;
 
 export function OpenDelCardsRoot():Promise<string>;
 
+export function OpenFolderInExplorer(arg1:string):Promise<string>;
+
 export function PasteClipboard(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function PlanDelete(arg1:Array<string>):Promise<string>;
+
+export function PlanFixMissing():Promise<string>;
+
+export function PlanIsolateExtra():Promise<string>;
 
 export function Rescan():Promise<string>;
 

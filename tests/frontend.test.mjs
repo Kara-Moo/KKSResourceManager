@@ -135,6 +135,36 @@ const mockApp = {
       pending: false,
     })) });
   },
+  PlanFixMissing: () => {
+    window.__calls.push(['PlanFixMissing']);
+    return JSON.stringify({ success: true, message: '', data: {
+      planId: 'fix-1', totalBytes: 1048576,
+      recoverable: [
+        { guid: 'missing.a', name: 'a.zipmod', from: 'C:/DEL/zipmod/a.zipmod', to: 'C:/KK/mods/a.zipmod', refCards: 3, refPlugins: 0, source: 'del-zipmod' },
+        { guid: 'missing.b', name: 'b.zipmod', from: 'C:/DELED/b.zipmod', to: 'C:/KK/mods/b.zipmod', refCards: 1, refPlugins: 1, source: 'deled' },
+      ],
+      unrecoverable: [ { guid: 'missing.c', refCards: 2, refPlugins: 0, sample: ['c1.png', 'c2.png'] } ],
+    }});
+  },
+  CommitFixMissing: (guids) => {
+    window.__calls.push(['CommitFixMissing', guids]);
+    return JSON.stringify({ success: true, message: 'ok', data: { restored: guids.length, skipped: 0, failed: [] } });
+  },
+  PlanIsolateExtra: () => {
+    window.__calls.push(['PlanIsolateExtra']);
+    return JSON.stringify({ success: true, message: '', data: {
+      planId: 'extra-1', totalBytes: 2097152,
+      candidates: [
+        { guid: 'extra.a', base: 'unused-a.zipmod', path: 'C:/KK/mods/unused-a.zipmod', size: 1048576, note: '' },
+        { guid: 'extra.b', base: 'unused-b.zipmod', path: 'C:/KK/mods/unused-b.zipmod', size: 1048576, note: '重复副本' },
+      ],
+      skipped: [ { path: 'C:/KK/mods/timeline.zipmod', reason: '被插件 Timeline.dll 硬编码引用' } ],
+    }});
+  },
+  CommitIsolateExtra: (guids) => {
+    window.__calls.push(['CommitIsolateExtra', guids]);
+    return JSON.stringify({ success: true, message: 'ok', data: { isolated: guids.length, bytes: 2097152, skipped: 0, failed: [] } });
+  },
   OpenFolderInExplorer: (abs) => JSON.stringify({ success: true, message: 'ok', data: null }),
   GetZipmodDetail: (guid) => JSON.stringify({ success: true, message: '', data: { guid, path: 'C:/x.zipmod', base: 'x.zipmod', size: 100, cards: [], plugins: [], refCards: 0, refPlugins: 0, parseErr: '' } }),
   GetFolderPreview: (p) => JSON.stringify({ success: true, message: '', data: {
@@ -826,6 +856,48 @@ console.log('\n【21】FIX-04：删除按钮自动择侧');
     window.__rightNodes = [];
     renderAll();
   });
+}
+
+
+console.log('\n【22】阶段F 死按钮收口：zipmod 两个管理入口');
+{
+  await page.selectOption('#mode-select', 'zipmod');
+  await page.waitForTimeout(500);
+
+  const fixVisible = await page.locator('#btn-fix-missing').isVisible();
+  const extraVisible = await page.locator('#btn-isolate-extra').isVisible();
+  check('zipmod 模式显示两个管理按钮', fixVisible && extraVisible);
+
+  // 修复缺失
+  await page.locator('#btn-fix-missing').click();
+  await page.waitForTimeout(500);
+  let shown = await page.locator('#modal-mask.show').count();
+  check('点「修复缺失」弹计划对话框', shown === 1);
+  let body = shown ? await page.locator('#modal-body').innerText() : '';
+  check('计划列出可修复与无法修复', body.includes('可修复 2') && body.includes('无法修复 1'), `实际 "${body.slice(0, 100)}"`);
+  const fixChecks = await page.locator('.fix-check').count();
+  check('可修复项默认全选', fixChecks === 2, `实际 ${fixChecks} 个`);
+
+  // 点确认 → 调用 CommitFixMissing
+  await page.locator('#modal-foot button').nth(1).click();
+  await page.waitForTimeout(500);
+  const commitFix = await page.evaluate(() => window.__calls.filter(c => c[0] === 'CommitFixMissing').length);
+  check('确认后调用 CommitFixMissing', commitFix === 1, `实际 ${commitFix} 次`);
+
+  // 隔离多余
+  await page.locator('#btn-isolate-extra').click();
+  await page.waitForTimeout(500);
+  shown = await page.locator('#modal-mask.show').count();
+  check('点「隔离多余」弹计划对话框', shown === 1);
+  body = shown ? await page.locator('#modal-body').innerText() : '';
+  check('计划列出候选与永不自动隔离清单', body.includes('将隔离 2') && body.includes('永不自动隔离'), `实际 "${body.slice(0, 100)}"`);
+  const extraChecks = await page.locator('.extra-check').count();
+  check('候选默认全选', extraChecks === 2, `实际 ${extraChecks} 个`);
+
+  await page.locator('#modal-foot button').nth(1).click();
+  await page.waitForTimeout(500);
+  const commitExtra = await page.evaluate(() => window.__calls.filter(c => c[0] === 'CommitIsolateExtra').length);
+  check('确认后调用 CommitIsolateExtra', commitExtra === 1, `实际 ${commitExtra} 次`);
 }
 
 await page.screenshot({ path: path.join(__dirname, '..', 'build', 'frontend-test.png'), fullPage: false });

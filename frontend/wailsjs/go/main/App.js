@@ -30,12 +30,24 @@ export function CommitDelete(arg1) {
   return window['go']['main']['App']['CommitDelete'](arg1);
 }
 
+export function CommitFixMissing(arg1) {
+  return window['go']['main']['App']['CommitFixMissing'](arg1);
+}
+
+export function CommitIsolateExtra(arg1) {
+  return window['go']['main']['App']['CommitIsolateExtra'](arg1);
+}
+
 export function ExecuteIsolate(arg1, arg2) {
   return window['go']['main']['App']['ExecuteIsolate'](arg1, arg2);
 }
 
 export function ExecuteRestore(arg1, arg2) {
   return window['go']['main']['App']['ExecuteRestore'](arg1, arg2);
+}
+
+export function GetBigPreview(arg1) {
+  return window['go']['main']['App']['GetBigPreview'](arg1);
 }
 
 export function GetCardPreview(arg1) {
@@ -98,6 +110,10 @@ export function GetThumbBatch(arg1) {
   return window['go']['main']['App']['GetThumbBatch'](arg1);
 }
 
+export function GetThumbStats() {
+  return window['go']['main']['App']['GetThumbStats']();
+}
+
 export function GetTrashTree() {
   return window['go']['main']['App']['GetTrashTree']();
 }
@@ -114,12 +130,24 @@ export function OpenDelCardsRoot() {
   return window['go']['main']['App']['OpenDelCardsRoot']();
 }
 
+export function OpenFolderInExplorer(arg1) {
+  return window['go']['main']['App']['OpenFolderInExplorer'](arg1);
+}
+
 export function PasteClipboard(arg1, arg2, arg3) {
   return window['go']['main']['App']['PasteClipboard'](arg1, arg2, arg3);
 }
 
 export function PlanDelete(arg1) {
   return window['go']['main']['App']['PlanDelete'](arg1);
+}
+
+export function PlanFixMissing() {
+  return window['go']['main']['App']['PlanFixMissing']();
+}
+
+export function PlanIsolateExtra() {
+  return window['go']['main']['App']['PlanIsolateExtra']();
 }
 
 export function Rescan() {

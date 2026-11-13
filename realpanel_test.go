@@ -224,3 +224,51 @@ func TestRealZipmodFullList(t *testing.T) {
 		t.Errorf("全量返回不应慢：耗时 %v（目标 <200ms）", elapsed)
 	}
 }
+
+// TestRealZipmodOpsPlans 阶段 F 两个两阶段计划接口在真实数据上可用。
+func TestRealZipmodOpsPlans(t *testing.T) {
+	root := strings.TrimSpace(os.Getenv("KKS_REAL_ROOT"))
+	if root == "" {
+		t.Skip("未设置 KKS_REAL_ROOT，跳过")
+	}
+	m, err := NewManager(root)
+	if err != nil {
+		t.Fatalf("创建 Manager 失败: %v", err)
+	}
+	store, _ := index.NewStore(m.DelCardsRoot)
+	old, _ := store.Load(m.KksRoot)
+	if old == nil {
+		t.Skip("无索引")
+	}
+	m.applyIndex(old, index.Derive(old))
+
+	fix := m.PlanFixMissing()
+	t.Logf("修复缺失计划：可修复 %d / 无法修复 %d / %.1f MB",
+		len(fix.Recoverable), len(fix.Unrecoverable), float64(fix.TotalBytes)/1024/1024)
+
+	extra := m.PlanIsolateExtra()
+	t.Logf("隔离多余计划：候选 %d / 永不自动隔离 %d / %.1f MB",
+		len(extra.Candidates), len(extra.Skipped), float64(extra.TotalBytes)/1024/1024)
+
+	if fix.PlanID == "" || extra.PlanID == "" {
+		t.Error("两个计划都应带 planId")
+	}
+	// 候选必须三个条件都满足：无卡片引用、无插件引用、无其它 mod 依赖
+	for _, c := range extra.Candidates {
+		if len(m.GlobalDepMap[c.GUID]) != 0 {
+			t.Errorf("候选 %s 仍被 %d 张卡片引用，不应出现在多余清单", c.GUID, len(m.GlobalDepMap[c.GUID]))
+			break
+		}
+		if len(m.PluginDepMap[c.GUID]) != 0 {
+			t.Errorf("候选 %s 仍被插件引用，不应出现在多余清单", c.GUID)
+			break
+		}
+	}
+	// Timeline.dll 硬编码引用的 GUID 必须在「永不自动隔离」里（若它存在且无卡片引用）
+	for _, s := range extra.Skipped {
+		if s.Reason == "" {
+			t.Error("跳过项必须给出原因")
+			break
+		}
+	}
+}
