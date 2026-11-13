@@ -281,7 +281,7 @@ func (s *InvisibleStore) HideFolders(paths []string, side string) HideResult {
 			res.Skipped++
 			res.Logs = append(res.Logs, OperationLog{
 				"warn",
-				fmt.Sprintf("无法删除，不是空文件，存在 %d 个文件：%s", files, abs),
+				fmt.Sprintf("文件夹不是空的（含 %d 个文件，角色卡也会计入），只有空文件夹才能隐藏：%s", files, abs),
 			})
 			continue
 		}

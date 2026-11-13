@@ -67,6 +67,8 @@ export function OpenDelCardsRoot():Promise<string>;
 
 export function OpenFolderInExplorer(arg1:string):Promise<string>;
 
+export function OpenListDirInExplorer(arg1:string,arg2:string,arg3:string):Promise<string>;
+
 export function PasteClipboard(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function PlanDelete(arg1:Array<string>):Promise<string>;

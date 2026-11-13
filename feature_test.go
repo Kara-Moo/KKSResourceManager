@@ -129,12 +129,12 @@ func TestHideNonEmptyFolderRejected(t *testing.T) {
 	// 日志必须包含提示语
 	found := false
 	for _, l := range res.Logs {
-		if strings.Contains(l.Message, "无法删除，不是空文件") {
+		if strings.Contains(l.Message, "不是空的") && strings.Contains(l.Message, "只有空文件夹才能隐藏") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("日志应包含「无法删除，不是空文件」提示，实际: %v", res.Logs)
+		t.Errorf("日志应说明「文件夹不是空的，只有空文件夹才能隐藏」，实际: %v", res.Logs)
 	}
 	// 文件夹必须还在
 	if _, err := os.Stat(notEmpty); err != nil {

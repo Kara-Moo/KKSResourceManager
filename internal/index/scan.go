@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"kksresourcemanager/internal/core"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -134,8 +135,9 @@ func isZipmodFile(path string, d fs.DirEntry) bool {
 	return strings.EqualFold(filepath.Ext(path), ".zipmod")
 }
 
+// isPNGFile 判断是否为受支持的角色卡文件（含 JPG，名称沿用历史调用点）。
 func isPNGFile(path string, d fs.DirEntry) bool {
-	return strings.EqualFold(filepath.Ext(path), ".png")
+	return core.IsCardFile(path)
 }
 
 func isDLLFile(path string, d fs.DirEntry) bool {

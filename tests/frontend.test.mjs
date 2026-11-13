@@ -60,11 +60,12 @@ const mockScript = `
 window.__calls = [];
 window.__thumbBatchCalls = [];
 window.__rightNodes = [];
+window.__treeData = null;
 const mockApp = {
   GetLeftTreeData: (mode) => {
     window.__calls.push(['GetLeftTreeData', mode]);
     if (mode === 'invisible') return JSON.stringify({ success: true, message: '', data: ${JSON.stringify(hiddenTree)} });
-    return JSON.stringify({ success: true, message: '', data: ${JSON.stringify(makeTreeData())} });
+    return JSON.stringify({ success: true, message: '', data: window.__treeData || ${JSON.stringify(makeTreeData())} });
   },
   GetRightTreeData: (mode) => JSON.stringify({ success: true, message: '', data: { mode, root: 'C:\\\\DEL', rootName: 'DEL', nodes: window.__rightNodes || [] } }),
   GetInvisibleTreeData: () => JSON.stringify({ success: true, message: '', data: ${JSON.stringify(hiddenTree)} }),
@@ -165,7 +166,14 @@ const mockApp = {
     window.__calls.push(['CommitIsolateExtra', guids]);
     return JSON.stringify({ success: true, message: 'ok', data: { isolated: guids.length, bytes: 2097152, skipped: 0, failed: [] } });
   },
-  OpenFolderInExplorer: (abs) => JSON.stringify({ success: true, message: 'ok', data: null }),
+  OpenFolderInExplorer: (abs) => {
+    window.__calls.push(['OpenFolderInExplorer', abs]);
+    return JSON.stringify({ success: true, message: 'ok', data: null });
+  },
+  OpenListDirInExplorer: (side, mode, rel) => {
+    window.__calls.push(['OpenListDirInExplorer', side, mode, rel]);
+    return JSON.stringify({ success: true, message: 'ok', data: null });
+  },
   GetZipmodDetail: (guid) => JSON.stringify({ success: true, message: '', data: { guid, path: 'C:/x.zipmod', base: 'x.zipmod', size: 100, cards: [], plugins: [], refCards: 0, refPlugins: 0, parseErr: '' } }),
   GetFolderPreview: (p) => JSON.stringify({ success: true, message: '', data: {
     stats: { subfolderCount: 2, cardCount: 3, totalFiles: 7, totalSize: 1234 },
@@ -898,6 +906,110 @@ console.log('\n【22】阶段F 死按钮收口：zipmod 两个管理入口');
   await page.waitForTimeout(500);
   const commitExtra = await page.evaluate(() => window.__calls.filter(c => c[0] === 'CommitIsolateExtra').length);
   check('确认后调用 CommitIsolateExtra', commitExtra === 1, `实际 ${commitExtra} 次`);
+}
+
+
+console.log('\n【23】JPG 角色卡：列表识别 + 右键菜单');
+{
+  await page.selectOption('#mode-select', 'female_card');
+  await page.waitForTimeout(400);
+
+  // 注入含 .JPG 的树：一个非空文件夹 + 一张 JPG 卡
+  await page.evaluate(() => {
+    window.__treeData = {
+      mode: 'female_card', root: 'C://KK//female', rootName: 'UserData/chara/female',
+      nodes: [
+        { id: 'C://KK//female//22.7.16', name: '22.7.16', type: 'folder', path: '',
+          mods: [], modNames: [], size: 0, folderStats: { totalFiles: 1, cardCount: 1, subfolderCount: 0, totalSize: 496668 } },
+        { id: 'C://KK//female//22.7.16//card.JPG', name: 'card.JPG', type: 'card',
+          path: '22.7.16', mods: [], modNames: [], size: 496668 },
+        { id: 'C://KK//female//empty', name: 'empty', type: 'folder', path: '',
+          mods: [], modNames: [], size: 0, folderStats: { totalFiles: 0, cardCount: 0, subfolderCount: 0, totalSize: 0 } },
+      ],
+    };
+    window.__calls.length = 0;
+  });
+  await page.evaluate(async () => { await loadLeft(); });
+  await page.waitForTimeout(400);
+
+  const rows = await page.locator('#left-list .list-item').count();
+  check('含 JPG 的目录树正常渲染', rows === 2, `实际 ${rows} 行`);
+
+  // 进入含 JPG 的文件夹，确认 JPG 行可见
+  await page.locator('#left-list .list-item[data-name="22.7.16"]').dblclick();
+  await page.waitForTimeout(400);
+  const jpgRow = await page.locator('#left-list .list-item[data-name="card.JPG"]').count();
+  check('JPG 角色卡出现在列表里', jpgRow === 1, `实际 ${jpgRow} 行`);
+
+  // 右键 JPG：应有「在文件资源管理器中打开」，且不应有「隐藏该空文件夹」
+  await page.locator('#left-list .list-item[data-name="card.JPG"]').click({ button: 'right' });
+  await page.waitForTimeout(400);
+  let items = await page.locator('#context-menu .menu-item').allInnerTexts();
+  let joined = items.join('|');
+  check('行菜单含「在文件资源管理器中打开」', joined.includes('在文件资源管理器中打开'), joined);
+  check('文件行菜单不含「隐藏该空文件夹」', !joined.includes('隐藏该空文件夹'), joined);
+
+  // 点它 → 应传该 JPG 的绝对路径给后端
+  const openItem = page.locator('#context-menu .menu-item', { hasText: '在文件资源管理器中打开' });
+  await openItem.click();
+  await page.waitForTimeout(300);
+  const revealCalls = await page.evaluate(() => window.__calls.filter(c => c[0] === 'OpenFolderInExplorer'));
+  check('打开项传的是焦点条目的绝对路径', revealCalls.length === 1 && String(revealCalls[0][1]).includes('card.JPG'), JSON.stringify(revealCalls));
+
+  // 收起菜单，避免遮挡后续点击
+  await page.evaluate(() => hideContextMenu());
+  await page.waitForTimeout(150);
+
+  // 返回上级，右键「非空文件夹」不应出现隐藏项
+  await page.locator('#btn-back-left').click();
+  await page.waitForTimeout(400);
+  await page.locator('#left-list .list-item[data-name="22.7.16"]').click({ button: 'right' });
+  await page.waitForTimeout(400);
+  items = await page.locator('#context-menu .menu-item').allInnerTexts();
+  joined = items.join('|');
+  check('非空文件夹不出现「隐藏该空文件夹」', !joined.includes('隐藏该空文件夹'), joined);
+  check('非空文件夹仍有「在文件资源管理器中打开」', joined.includes('在文件资源管理器中打开'), joined);
+
+  // 空文件夹才显示隐藏项
+  await page.evaluate(() => hideContextMenu());
+  await page.waitForTimeout(150);
+  await page.locator('#left-list .list-item[data-name="empty"]').click({ button: 'right' });
+  await page.waitForTimeout(400);
+  items = await page.locator('#context-menu .menu-item').allInnerTexts();
+  joined = items.join('|');
+  check('空文件夹显示「隐藏该空文件夹」', joined.includes('隐藏该空文件夹'), joined);
+
+  // 清理，避免影响后续
+  await page.evaluate(() => { hideContextMenu(); window.__treeData = null; });
+}
+
+console.log('\n【24】zipmod 插件引用改为文字说明');
+{
+  await page.evaluate(() => {
+    window.__panelData = {
+      focus: { kind: 'mod', name: 'x.zipmod', abs: 'C:/KK/mods/x.zipmod', info: '被 2 个文件占用' },
+      sections: [
+        { id: 'cards', title: '使用此 zipmod 的卡片', layout: 'grid', total: 1,
+          tiles: [{ kind: 'card', name: 'card.JPG', abs: 'C:/KK/female/card.JPG', rel: '', badge: '', thumbKey: 'k', thumb: '', pending: true }],
+          more: 0, moreLabel: '', visible: true, empty: '', lazy: true },
+        { id: 'plugins', title: '插件引用', layout: 'summary', total: 2,
+          tiles: [ { kind: 'text', name: '被 2 个 dll 插件使用' }, { kind: 'text', name: '例如：A.dll、B.dll' } ],
+          more: 0, moreLabel: '', visible: true, empty: '', lazy: false },
+      ],
+      gen: 30,
+    };
+  });
+  await page.evaluate(async () => { await refreshPanel(); });
+  await page.waitForTimeout(400);
+
+  const summary = await page.locator('#panel-sections .panel-summary').count();
+  check('渲染文字说明区域', summary === 1, `实际 ${summary} 个`);
+  const text = summary ? await page.locator('#panel-sections .panel-summary').innerText() : '';
+  check('文案含「被 2 个 dll 插件使用」', text.includes('被 2 个 dll 插件使用'), `实际 "${text}"`);
+  const pluginRows = await page.locator('#panel-sections .panel-list-row').count();
+  check('不再渲染插件图标窗格', pluginRows === 0, `实际 ${pluginRows} 行`);
+  const cardCells = await page.locator('#panel-sections .panel-cell').count();
+  check('引用卡片（含 JPG）仍显示在区域 A', cardCells === 1, `实际 ${cardCells} 个`);
 }
 
 await page.screenshot({ path: path.join(__dirname, '..', 'build', 'frontend-test.png'), fullPage: false });

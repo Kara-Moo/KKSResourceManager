@@ -19,6 +19,7 @@ import (
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"kksresourcemanager/internal/core"
 	"kksresourcemanager/internal/preview"
 	"kksresourcemanager/internal/tx"
 )
@@ -449,7 +450,7 @@ func findSampleCard(dir string) string {
 		if info.IsDir() {
 			return nil
 		}
-		if strings.EqualFold(filepath.Ext(path), ".png") {
+		if core.IsCardFile(path) {
 			found = path
 			return filepath.SkipAll
 		}
@@ -667,7 +668,7 @@ func (m *Manager) buildTreeLocked(root string, isDel bool, kind ResourceKind) []
 
 		// 只收录本类型的资源文件（v2.2 FIX-06）。
 		// 目录仍要继续 walk，但目录里的非资源文件一律跳过。
-		if kind.FileExt != "" && !strings.EqualFold(filepath.Ext(path), kind.FileExt) {
+		if !core.IsCardFile(path) {
 			return nil
 		}
 
@@ -1532,10 +1533,10 @@ func (a *App) GetKKSInfo() string {
 	kinds := make([]map[string]string, 0, len(ResourceKinds))
 	for _, k := range ResourceKinds {
 		kinds = append(kinds, map[string]string{
-			"mode":     k.Mode,
-			"name":     k.Name,
-			"source":   manager.SourceDir(k),
-			"del":      manager.DelDir(k),
+			"mode":      k.Mode,
+			"name":      k.Name,
+			"source":    manager.SourceDir(k),
+			"del":       manager.DelDir(k),
 			"sourceRel": k.SourceRel,
 		})
 	}
@@ -1567,11 +1568,11 @@ func (a *App) GetGlobalDepInfo() string {
 		refCount += len(refs)
 	}
 	return ok(map[string]interface{}{
-		"guidCount":    guidCount,
-		"refCount":     refCount,
-		"zipmodCount":  len(manager.ZipmodDB),
-		"fileCount":    len(manager.FileDeps),
-		"scanned":      manager.Scanned,
+		"guidCount":   guidCount,
+		"refCount":    refCount,
+		"zipmodCount": len(manager.ZipmodDB),
+		"fileCount":   len(manager.FileDeps),
+		"scanned":     manager.Scanned,
 	}, "")
 }
 
@@ -1595,6 +1596,12 @@ func (a *App) OpenDelCardsRoot() string {
 // 相对 OpenDelCardsRoot 的区别：这里打开的是**用户当前浏览的目录**，
 // 空白区菜单的「在资源管理器中打开」应当指向它，而不是固定的隔离区根。
 // 路径必须位于受管范围内，避免被当作任意路径执行入口。
+// OpenFolderInExplorer 在文件管理器中打开指定路径。
+//
+// 传目录 → 打开该目录；传文件 → 打开其父目录并选中该文件。
+// 路径会先规范化成纯本地分隔符的绝对路径 —— 早期版本直接把前端拼出的
+// 混合分隔符路径（如 E://KKV114//...//female/22.7.16）交给 explorer，
+// Windows 资源管理器会把它当成无效参数，退回默认的「文档」目录。
 func (a *App) OpenFolderInExplorer(absPath string) string {
 	a.mu.RLock()
 	manager := a.manager
@@ -1603,28 +1610,81 @@ func (a *App) OpenFolderInExplorer(absPath string) string {
 	if manager == nil {
 		return fail("请先选择 KKS 根目录。")
 	}
-	abs := strings.TrimSpace(absPath)
-	if abs == "" {
-		return fail("未指定目录。")
+	raw := strings.TrimSpace(absPath)
+	if raw == "" {
+		return fail("未指定路径。")
 	}
+	abs, err := filepath.Abs(raw)
+	if err != nil {
+		return fail("路径无效：" + err.Error())
+	}
+	abs = filepath.Clean(filepath.FromSlash(abs))
 	if !manager.pathAllowed(abs) {
-		return fail("该目录不在允许的范围内。")
+		return fail("该路径不在允许的范围内：" + abs)
 	}
 	info, err := os.Stat(abs)
-	if err != nil || !info.IsDir() {
-		return fail("目录不存在：" + abs)
+	if err != nil {
+		return fail("路径不存在：" + abs)
 	}
-	if err := openDirectory(abs); err != nil {
+	if info.IsDir() {
+		if err := openDirectory(abs); err != nil {
+			return fail(fmt.Sprintf("打开目录失败: %v", err))
+		}
+		return ok(nil, "已在资源管理器中打开。")
+	}
+	if err := revealFile(abs); err != nil {
+		return fail(fmt.Sprintf("打开文件所在目录失败: %v", err))
+	}
+	return ok(nil, "已在资源管理器中选中该文件。")
+}
+
+// OpenListDirInExplorer 打开当前列表正在浏览的目录。
+//
+// 由后端按 side + mode + rel 解析，避免前端自己拼路径拼出混合分隔符。
+func (a *App) OpenListDirInExplorer(side, mode, rel string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	dir := manager.resolveRelDir(mode, side, rel)
+	if dir == "" {
+		return fail("当前视图没有对应的磁盘目录。")
+	}
+	dir = filepath.Clean(filepath.FromSlash(dir))
+	if !manager.pathAllowed(dir) {
+		return fail("该目录不在允许的范围内：" + dir)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return fail("目录不存在：" + dir)
+	}
+	if err := openDirectory(dir); err != nil {
 		return fail(fmt.Sprintf("打开目录失败: %v", err))
 	}
-	return ok(nil, "已在资源管理器中打开。")
+	return ok(nil, "已在资源管理器中打开当前目录。")
+}
+
+// revealFile 打开父目录并选中指定文件。
+func revealFile(abs string) error {
+	clean := filepath.Clean(filepath.FromSlash(abs))
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("explorer", "/select,"+clean).Start()
+	case "darwin":
+		return exec.Command("open", "-R", clean).Start()
+	default:
+		return exec.Command("xdg-open", filepath.Dir(clean)).Start()
+	}
 }
 
 // openDirectory 跨平台打开目录。
 func openDirectory(path string) error {
+	clean := filepath.Clean(filepath.FromSlash(path))
 	switch runtime.GOOS {
 	case "windows":
-		return exec.Command("explorer", path).Start()
+		return exec.Command("explorer", clean).Start()
 	case "darwin":
 		return exec.Command("open", path).Start()
 	default:

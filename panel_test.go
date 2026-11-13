@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"kksresourcemanager/internal/core"
 	"kksresourcemanager/internal/index"
 )
 
@@ -264,8 +265,15 @@ func TestPanelZipmodZeroRefs(t *testing.T) {
 	if !secB.Visible {
 		t.Error("零引用时区域 B 仍应可见")
 	}
-	if secB.Empty == "" {
-		t.Error("零插件引用时应显示空态文案")
+	if secB.Layout != "summary" {
+		t.Errorf("插件区域应为 summary 布局，实际 %s", secB.Layout)
+	}
+	joined := ""
+	for _, tile := range secB.Tiles {
+		joined += tile.Name
+	}
+	if !strings.Contains(joined, "被 0 个 dll 插件使用") || !strings.Contains(joined, "未被任何插件硬编码引用") {
+		t.Errorf("零插件引用时应给出文字说明，实际 %q", joined)
 	}
 	// 全文不应出现"无法预览"
 	for _, sec := range panel.Sections {
@@ -306,7 +314,9 @@ func TestPanelZipmodWithRefs(t *testing.T) {
 	}
 }
 
-// TestPanelZipmodPluginSection zipmod 的插件区域应为 list 布局。
+// TestPanelZipmodPluginSection 插件区域只给文字说明，不铺图标窗格。
+//
+// 新契约（用户明确要求）：DLL 插件显示「被 N 个 dll 插件使用」即可。
 func TestPanelZipmodPluginSection(t *testing.T) {
 	env := newTestEnv(t)
 	m := env.manager
@@ -324,14 +334,23 @@ func TestPanelZipmodPluginSection(t *testing.T) {
 	if secB.ID != "plugins" {
 		t.Errorf("区域 B 应为 plugins，实际 %s", secB.ID)
 	}
-	if secB.Layout != "list" {
-		t.Errorf("插件区域应为 list 布局，实际 %s", secB.Layout)
+	if secB.Layout != "summary" {
+		t.Errorf("插件区域应为 summary 布局，实际 %s", secB.Layout)
 	}
-	if len(secB.Tiles) != 1 {
-		t.Errorf("应渲染 1 个插件格，实际 %d", len(secB.Tiles))
+	if secB.Total != 1 {
+		t.Errorf("插件引用数应为 1，实际 %d", secB.Total)
 	}
-	if secB.Tiles[0].Name != "Foo.dll" {
-		t.Errorf("插件名应为 Foo.dll，实际 %s", secB.Tiles[0].Name)
+	if len(secB.Tiles) == 0 {
+		t.Fatal("应至少有一行文字说明")
+	}
+	if !strings.Contains(secB.Tiles[0].Name, "被 1 个 dll 插件使用") {
+		t.Errorf("首行应为插件数说明，实际 %q", secB.Tiles[0].Name)
+	}
+	// 不应再出现 plugin 类型的图标格
+	for _, tile := range secB.Tiles {
+		if tile.Kind == "plugin" {
+			t.Errorf("不应再渲染插件图标格：%s", tile.Name)
+		}
 	}
 }
 
@@ -695,7 +714,8 @@ func TestBuildTreeFiltersExtensions(t *testing.T) {
 	m := env.manager
 	kind := ResourceKinds[0]
 
-	// 同一目录下放：1 张卡片 + 3 个非卡片文件 + 1 个子目录（内含 1 卡 + 1 jpg）
+	// 根目录：1 PNG + 2 JPG（合法卡片）+ 1 个 PPK（无关文件）
+	// 子目录：1 PNG + 1 JPG
 	writeFile(t, env.femaleCard("real.png"), "png")
 	writeFile(t, env.femaleCard("Cache_4379b653c5a27864.jpg"), "jpg")
 	writeFile(t, env.femaleCard("Cache_4175e3ce77527a70.jpeg"), "jpeg")
@@ -711,22 +731,25 @@ func TestBuildTreeFiltersExtensions(t *testing.T) {
 			continue
 		}
 		files++
-		if filepath.Ext(n.Name) != ".png" {
+		if !core.IsCardFile(n.Name) {
 			t.Errorf("列表混入了非卡片文件：%s（%s）", n.Name, n.Type)
 		}
+		if strings.EqualFold(filepath.Ext(n.Name), ".ppk") {
+			t.Errorf("PPK 不应出现在列表：%s", n.Name)
+		}
 	}
-	if files != 2 {
-		t.Errorf("应只有 2 张卡片，实际 %d 个文件节点", files)
+	if files != 5 {
+		t.Errorf("应有 5 张卡片（3 根目录 + 2 子目录），实际 %d 个文件节点", files)
 	}
 
-	// 面板的卡片数应与列表行数一致（同一目录）
+	// 面板的卡片数应与列表根目录行数一致（含 JPG）
 	panel, err := m.BuildPanel("left", kind.Mode, "", m.SourceDir(kind))
 	if err != nil {
 		t.Fatalf("BuildPanel 失败: %v", err)
 	}
 	for _, sec := range panel.Sections {
-		if sec.ID == "cards" && sec.Total != 1 {
-			t.Errorf("根目录面板卡片数应为 1，实际 %d", sec.Total)
+		if sec.ID == "cards" && sec.Total != 3 {
+			t.Errorf("根目录面板卡片数应为 3（含 2 张 JPG），实际 %d", sec.Total)
 		}
 	}
 }

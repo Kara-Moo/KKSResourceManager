@@ -134,6 +134,10 @@ export function OpenFolderInExplorer(arg1) {
   return window['go']['main']['App']['OpenFolderInExplorer'](arg1);
 }
 
+export function OpenListDirInExplorer(arg1, arg2, arg3) {
+  return window['go']['main']['App']['OpenListDirInExplorer'](arg1, arg2, arg3);
+}
+
 export function PasteClipboard(arg1, arg2, arg3) {
   return window['go']['main']['App']['PasteClipboard'](arg1, arg2, arg3);
 }

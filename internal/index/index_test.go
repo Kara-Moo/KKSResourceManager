@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -57,7 +58,7 @@ func (e *env) writeZipmod(t *testing.T, name, guid string) string {
 // newScanner 构造一个使用简单桩函数的 Scanner。
 func (e *env) newScanner() *Scanner {
 	return &Scanner{
-		Root:  e.root,
+		Root:    e.root,
 		ModsDir: e.mods,
 		ResourceRoots: map[string]string{
 			"female_card": e.resource,
@@ -393,5 +394,44 @@ func TestHashGUIDSetStable(t *testing.T) {
 	h3 := HashGUIDSet([]string{"a", "b"})
 	if h1 == h3 {
 		t.Error("不同集合的哈希应不同")
+	}
+}
+
+// TestScanCollectsJPGCards JPG/JPEG 卡片必须进入正向索引，
+// 这是 zipmod 引用列表能显示 JPG 的前提（v2.3 JPG 支持）。
+func TestScanCollectsJPGCards(t *testing.T) {
+	e := newEnv(t)
+	e.writeCard(t, "a.png", "g1")
+	e.writeCard(t, "b.JPG", "g1,g2")
+	e.writeCard(t, "c.jpeg", "g2")
+	e.writeCard(t, "readme.txt", "g3")
+
+	s := e.newScanner()
+	idx, derived, stats, err := s.Scan(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("扫描失败: %v", err)
+	}
+	if stats.Parsed < 3 {
+		t.Errorf("至少应解析 3 张卡片，实际 %d", stats.Parsed)
+	}
+	if len(idx.Cards) != 3 {
+		t.Errorf("索引应含 3 张卡片（PNG+JPG+JPEG），实际 %d", len(idx.Cards))
+	}
+	for name := range idx.Cards {
+		if strings.EqualFold(filepath.Ext(name), ".txt") {
+			t.Errorf("不该把 txt 收进索引：%s", name)
+		}
+	}
+
+	// 反向依赖图应同时包含 JPG 引用
+	refs := derived.GlobalDepMap["g1"]
+	hasJPG := false
+	for _, r := range refs {
+		if strings.EqualFold(filepath.Ext(r), ".jpg") {
+			hasJPG = true
+		}
+	}
+	if !hasJPG {
+		t.Errorf("g1 的引用列表应包含 JPG 卡片，实际 %v", refs)
 	}
 }

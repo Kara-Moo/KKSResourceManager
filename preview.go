@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"image/jpeg"
 	_ "image/gif" // 注册 GIF 解码器
+	"image/jpeg"
 	"image/png"
 	"io"
 	"os"
@@ -192,14 +192,23 @@ func decodeCardImage(path string) (image.Image, int, int, error) {
 	}
 	defer f.Close()
 
-	// 优先整体按 PNG 解析
-	cfg, format, err := image.DecodeConfig(f)
-	if err == nil && format == "png" {
+	// 优先按标准图片格式整体解析（PNG 或 JPEG）。
+	// KKS 的 PNG 卡是「完整 PNG + IEND 之后追加数据」，Go 解码器读到 IEND 即停；
+	// JPG 卡同理，解码器读到 EOI 即停，尾随数据被自动忽略。
+	cfg, format, cfgErr := image.DecodeConfig(f)
+	if cfgErr == nil {
 		if cfg.Width*cfg.Height > previewMaxPixels {
 			return nil, 0, 0, fmt.Errorf("图片分辨率过高（%dx%d），已跳过预览", cfg.Width, cfg.Height)
 		}
 		if _, err := f.Seek(0, io.SeekStart); err == nil {
-			img, decErr := png.Decode(f)
+			var img image.Image
+			var decErr error
+			switch format {
+			case "png":
+				img, decErr = png.Decode(f)
+			case "jpeg":
+				img, decErr = jpeg.Decode(f)
+			}
 			if decErr == nil && img != nil {
 				b := img.Bounds()
 				if b.Dx()*b.Dy() >= previewMinPixels {

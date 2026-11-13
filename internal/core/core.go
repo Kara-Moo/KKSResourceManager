@@ -108,10 +108,10 @@ func SortNatural(list []string) {
 
 // DirEntry 一项目录内容。
 type DirEntry struct {
-	Name string
-	Path string
-	IsDir bool
-	Size int64
+	Name    string
+	Path    string
+	IsDir   bool
+	Size    int64
 	ModTime int64
 }
 
@@ -231,8 +231,8 @@ func (c *SnapshotCache) ListDir(dir string, filter func(name string, isDir bool)
 			continue
 		}
 		item := DirEntry{
-			Name: e.Name(),
-			Path: filepath.Join(dir, e.Name()),
+			Name:  e.Name(),
+			Path:  filepath.Join(dir, e.Name()),
 			IsDir: e.IsDir(),
 		}
 		if info, err := e.Info(); err == nil {
@@ -370,7 +370,7 @@ func PickCover(dir string, listDir func(string) (*DirSnapshot, error)) string {
 		return ""
 	}
 	for _, e := range snap.Entries {
-		if !e.IsDir && isPNGName(e.Name) {
+		if !e.IsDir && IsCardFile(e.Name) {
 			return e.Path
 		}
 	}
@@ -401,7 +401,7 @@ func PickCover(dir string, listDir func(string) (*DirSnapshot, error)) string {
 			continue
 		}
 		for _, e := range snap.Entries {
-			if !e.IsDir && isPNGName(e.Name) {
+			if !e.IsDir && IsCardFile(e.Name) {
 				return e.Path
 			}
 		}
@@ -416,9 +416,22 @@ func PickCover(dir string, listDir func(string) (*DirSnapshot, error)) string {
 	return ""
 }
 
-// isPNGName 判断文件名是否为 PNG。
-func isPNGName(name string) bool {
-	return strings.EqualFold(filepath.Ext(name), ".png")
+// CardExtensions 受支持的角色卡文件扩展名（小写，含点）。
+//
+// KKS 的角色卡以 PNG 为主，但用户目录中也会出现 .jpg / .jpeg 卡片
+// （部分工具导出或玩家自行保存的立绘）。它们同样要进入列表、统计、索引、
+// 预览与依赖图，否则会出现「列表看不到卡、隐藏却提示非空」这类矛盾行为。
+var CardExtensions = []string{".png", ".jpg", ".jpeg"}
+
+// IsCardFile 判断一个路径/文件名是否是受支持的角色卡文件。
+func IsCardFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	for _, e := range CardExtensions {
+		if ext == e {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

@@ -179,7 +179,7 @@ func (m *Manager) BuildPanel(side, mode, rel, focusAbs string) (Panel, error) {
 		if isDir {
 			return true
 		}
-		return strings.EqualFold(filepath.Ext(name), ".png")
+		return core.IsCardFile(name)
 	})
 	if err != nil {
 		panel.Sections = []Section{
@@ -233,8 +233,8 @@ func (m *Manager) BuildPanel(side, mode, rel, focusAbs string) (Panel, error) {
 			secA.More = more
 			secA.MoreLabel = "还有 " + strconv.Itoa(more) + " 个文件夹"
 			secA.Tiles = append(secA.Tiles, Tile{
-				Kind: "more",
-				Name: secA.MoreLabel,
+				Kind:  "more",
+				Name:  secA.MoreLabel,
 				Badge: "",
 			})
 		}
@@ -268,8 +268,8 @@ func (m *Manager) BuildPanel(side, mode, rel, focusAbs string) (Panel, error) {
 			secB.More = more
 			secB.MoreLabel = "还有 " + strconv.Itoa(more) + " 张角色卡"
 			secB.Tiles = append(secB.Tiles, Tile{
-				Kind: "more",
-				Name: secB.MoreLabel,
+				Kind:  "more",
+				Name:  secB.MoreLabel,
 				Badge: "",
 			})
 		}
@@ -346,9 +346,8 @@ func (m *Manager) cardInfoLine(abs string) string {
 	if size == 0 {
 		sizeText = "0 B"
 	}
-	if deps == 0 {
-		return sizeText + " · 无依赖"
-	}
+	// 统一显示「依赖 N 个 zipmod」，N=0 也照实写。
+	// JPG 卡片若不含 KKS 附加数据，N 就是 0 —— 这是真实结果，不伪装成未知。
 	return sizeText + " · 依赖 " + strconv.Itoa(deps) + " 个 zipmod"
 }
 
@@ -430,36 +429,41 @@ func (m *Manager) buildZipmodPanel(panel *Panel, focusAbs, focusKind string) Pan
 		secA.Lazy = true
 	}
 
-	// --- 区域 B：引用它的插件 ---
-	secB := Section{ID: "plugins", Title: "引用此 GUID 的插件", Layout: "list"}
+	// --- 区域 B：插件引用（只给文字说明，不做窗格/图标）---
+	//
+	// 用户明确要求：DLL 插件只需「被 N 个 dll 插件使用」这一句，
+	// 不需要逐个列出图标。真正的审计价值在区域 A 的引用卡片全量列表。
+	secB := Section{ID: "plugins", Title: "插件引用", Layout: "summary"}
 	var plugins []string
 	if guid != "" {
 		plugins = append(plugins, m.PluginDepMap[guid]...)
 	}
-	sort.Strings(plugins)
 
 	secB.Total = len(plugins)
 	secB.Visible = true
+	secB.Tiles = []Tile{{
+		Kind: "text",
+		Name: "被 " + strconv.Itoa(len(plugins)) + " 个 dll 插件使用",
+	}}
 	if len(plugins) == 0 {
-		secB.Empty = "未被任何插件硬编码引用"
+		secB.Tiles = append(secB.Tiles, Tile{
+			Kind: "text",
+			Name: "未被任何插件硬编码引用，可作为普通 zipmod 管理",
+		})
 	} else {
-		// 插件列表同样全量：zipmod 视角一律不省略（§3.3 决策表）
-		shown, more := len(plugins), 0
-		for i := 0; i < shown && i < len(plugins); i++ {
-			rel := plugins[i]
-			secB.Tiles = append(secB.Tiles, Tile{
-				Kind: "plugin",
-				Name: filepath.Base(rel),
-				Rel:  rel,
-				Abs:  filepath.Join(m.KksRoot, filepath.FromSlash(rel)),
-				Badge: filepath.Dir(rel),
-			})
+		// 具体 DLL 名称仍可从「占用详情」弹窗查看，这里不铺图标
+		names := make([]string, 0, len(plugins))
+		for _, rel := range plugins {
+			names = append(names, filepath.Base(rel))
 		}
-		if more > 0 {
-			secB.More = more
-			secB.MoreLabel = "还有 " + strconv.Itoa(more) + " 个插件"
-			secB.Tiles = append(secB.Tiles, Tile{Kind: "more", Name: secB.MoreLabel})
+		sort.Strings(names)
+		if len(names) > 3 {
+			names = names[:3]
 		}
+		secB.Tiles = append(secB.Tiles, Tile{
+			Kind: "text",
+			Name: "例如：" + strings.Join(names, "、"),
+		})
 	}
 
 	panel.Sections = []Section{secA, secB}

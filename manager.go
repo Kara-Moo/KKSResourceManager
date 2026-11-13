@@ -290,7 +290,7 @@ type ScanResult struct {
 	DepGUIDCount   int
 	FailedFiles    int
 	FailedZipmods  int
-	MissingMods   []string
+	MissingMods    []string
 	ScanDurationMS int64
 	// Reused 本次复用的索引条目数（零 IO）
 	Reused int
@@ -325,10 +325,10 @@ func (m *Manager) ScanAll(progress func(phase string, done, total int)) ScanResu
 	old, _ := store.Load(m.KksRoot)
 
 	scanner := &index.Scanner{
-		Root:  m.KksRoot,
-		ModsDir: m.ModsDir(),
+		Root:          m.KksRoot,
+		ModsDir:       m.ModsDir(),
 		ResourceRoots: m.resourceRoots(),
-		PluginRoots:  m.pluginRoots(),
+		PluginRoots:   m.pluginRoots(),
 		ParseZipmod: func(path string) (string, []string, error) {
 			manifest, err := ReadModManifest(path)
 			guid := strings.TrimSpace(manifest.GUID)
@@ -502,13 +502,13 @@ type OperationLog struct {
 
 // IsolateResult 隔离操作结果。
 type IsolateResult struct {
-	Success       bool          `json:"success"`
-	MovedCards    int           `json:"movedCards"`
-	MovedMods     int           `json:"movedMods"`
-	KeptMods      int           `json:"keptMods"`
-	FailedCount   int           `json:"failedCount"`
+	Success       bool           `json:"success"`
+	MovedCards    int            `json:"movedCards"`
+	MovedMods     int            `json:"movedMods"`
+	KeptMods      int            `json:"keptMods"`
+	FailedCount   int            `json:"failedCount"`
 	Logs          []OperationLog `json:"logs"`
-	GlobalDepSize int           `json:"globalDepSize"`
+	GlobalDepSize int            `json:"globalDepSize"`
 }
 
 // Isolate 将选中的资源文件移动到隔离区，并按依赖图决定哪些 zipmod 可以一并移走。
@@ -592,7 +592,7 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 
 		// 文件夹：展开为文件列表
 		files, err := collectFilesStrict(src, func(path string) bool {
-			return strings.EqualFold(filepath.Ext(path), kind.FileExt)
+			return core.IsCardFile(path)
 		})
 		if err != nil {
 			res.FailedCount++
@@ -853,7 +853,7 @@ func (m *Manager) Restore(cardPaths []string) RestoreResult {
 		// 文件夹：展开为文件列表后再逐个恢复，保持原有目录结构
 		if info, statErr := os.Stat(abs); statErr == nil && info.IsDir() {
 			files, err := collectFilesStrict(abs, func(path string) bool {
-				return strings.EqualFold(filepath.Ext(path), kind.FileExt)
+				return core.IsCardFile(path)
 			})
 			if err != nil {
 				res.FailedCount++

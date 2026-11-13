@@ -378,7 +378,7 @@ var modIDMarker = []byte("ModID")
 // 再用 illusionsCard/Base.ResolveInfo 的 msgpack 解码器还原出 GUID。
 // 这样即便卡型不被 illusionsCard 的 readerMap 识别，也能提取到依赖。
 func scanResolveInfoGUIDs(data []byte) []string {
-	payload := pngPayload(data)
+	payload := cardPayload(data)
 	if len(payload) == 0 {
 		return nil
 	}
@@ -435,6 +435,83 @@ func plausibleMapHeader(b byte) bool {
 
 // pngPayload 返回 PNG 的 IEND 之后追加的数据。
 // 若文件不是带追加数据的 PNG，则返回空。
+// cardPayload 提取卡片文件里 KKS 写入的附加数据（GUID 依赖就在这里）。
+//
+// 三种常见形态：
+//  1. 标准 PNG 卡：完整 PNG + IEND 之后追加数据
+//  2. 真 JPEG 卡：JPEG 图像 + EOI 之后追加数据
+//     （部分导出工具会这样保存，payload 与 PNG 卡一致）
+//  3. JPEG 的 APP 段或尾部里内嵌了完整 PNG 帧
+//
+// 纯 JPEG 图片（没有任何 KKS 数据）返回 nil —— 它的 zipmod 依赖数就是 0，
+// 这是真实且可解释的结果，不该伪造。
+func cardPayload(data []byte) []byte {
+	// 1. 文件本身就是 PNG 卡
+	if p := pngPayload(data); len(p) > 0 {
+		return p
+	}
+
+	// 2. JPEG：EOI 之后的附加数据
+	tail := jpegPayload(data)
+	if len(tail) == 0 {
+		return nil
+	}
+
+	// 3. 附加数据里若内嵌了完整 PNG 帧，取该帧 IEND 之后的 payload
+	if p := pngPayload(tail); len(p) > 0 {
+		return p
+	}
+	return tail
+}
+
+// jpegPayload 定位 JPEG 的 EOI 并返回其后的字节。
+//
+// 不直接用 LastIndex(FFD9)：附加数据里可能又出现同样的字节，
+// 那样会把真正的 payload 跳过。这里按 JPEG 段结构走到 SOS，
+// 再从熵编码数据里取第一个 EOI。
+func jpegPayload(data []byte) []byte {
+	if len(data) < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+		return nil
+	}
+	eoiMarker := []byte{0xFF, 0xD9}
+	i := 2
+	for i+3 < len(data) {
+		if data[i] != 0xFF {
+			// 容错：某些文件段间有填充字节
+			i++
+			continue
+		}
+		marker := data[i+1]
+		if marker == 0xD9 { // EOI
+			if i+2 < len(data) {
+				return data[i+2:]
+			}
+			return nil
+		}
+		if marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8) {
+			i += 2
+			continue
+		}
+		if marker == 0xDA { // SOS：后面是熵编码数据
+			rel := bytes.Index(data[i+2:], eoiMarker)
+			if rel < 0 {
+				return nil
+			}
+			end := i + 2 + rel + 2
+			if end < len(data) {
+				return data[end:]
+			}
+			return nil
+		}
+		segLen := int(data[i+2])<<8 | int(data[i+3])
+		if segLen < 2 {
+			return nil
+		}
+		i += 2 + segLen
+	}
+	return nil
+}
+
 func pngPayload(data []byte) []byte {
 	idx := bytes.Index(data, Base.PngEndChunk)
 	if idx < 0 {

@@ -352,6 +352,18 @@
             margin-top: 3px; font-size: 12px; color: var(--text-3);
         }
 
+        /* 文字说明区域（zipmod 插件引用，不铺图标） */
+        .panel-summary {
+            padding: 8px 10px;
+            background: #f7f9fb;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            font-size: 13px;
+            color: var(--text-1);
+            line-height: 1.7;
+        }
+        .panel-summary .sub { color: var(--text-3); font-size: 12px; }
+
         /* 列表布局（插件区域） */
         .panel-list { display: flex; flex-direction: column; gap: 4px; }
         .panel-list-row {
@@ -1082,6 +1094,17 @@
                 // 单卡大图：只有一个格子，不铺网格
                 const infoText = (panel.focus && panel.focus.info) || '';
                 if (tiles.length) section.appendChild(renderSingle(tiles[0], infoText));
+            } else if (sec.layout === 'summary') {
+                // 纯文字说明（zipmod 的 dll 插件引用数）
+                const box = document.createElement('div');
+                box.className = 'panel-summary';
+                tiles.forEach((t, i) => {
+                    const line = document.createElement('div');
+                    if (i > 0) line.className = 'sub';
+                    line.innerText = t.name || '';
+                    box.appendChild(line);
+                });
+                section.appendChild(box);
             } else if (sec.layout === 'list') {
                 section.appendChild(renderPluginList(tiles));
             } else {
@@ -2062,16 +2085,26 @@
     //
     // 必须传**当前浏览的目录**，而不是固定的隔离区根 ——
     // 早期版本无论在哪一层都打开 DELCARDS 根，与菜单文案不符。
+    // openInExplorer 打开当前列表正在浏览的目录。
+    //
+    // 路径由后端按 (side, mode, rel) 解析，不再在前端手工拼接 ——
+    // 前端拼出的混合分隔符路径会让 explorer 退回默认的「文档」目录。
     async function openInExplorer(side) {
-        const isLeft = side === 'left';
-        const root = isLeft ? leftRoot : rightRoot;
-        const cur = isLeft ? leftCurrentPath : rightCurrentPath;
-        if (!root) {
-            showAlert('请先选择目录。');
+        const cur = side === 'left' ? leftCurrentPath : rightCurrentPath;
+        const res = await callBackend('OpenListDirInExplorer', side, currentMode, cur);
+        if (!res.success) {
+            showAlert(res.message || '无法打开目录。');
+        }
+    }
+
+    // revealItemInExplorer 在资源管理器中定位某个条目：
+    // 文件夹 → 打开它自己；文件 → 打开父目录并选中该文件。
+    async function revealItemInExplorer(item) {
+        if (!item || !item.id) {
+            showAlert('请先选中一个条目。');
             return;
         }
-        const abs = cur ? root + '/' + cur : root;
-        const res = await callBackend('OpenFolderInExplorer', abs);
+        const res = await callBackend('OpenFolderInExplorer', item.id);
         if (!res.success) {
             showAlert(res.message || '无法打开目录。');
         }
@@ -2770,6 +2803,11 @@
             elContextMenu.appendChild(sep);
         };
 
+        // 空文件夹判定必须与后端隐藏检查、列表按钮三者一致，
+        // 否则会出现「菜单里有隐藏项，点了却提示不是空文件夹」。
+        const stats = item && item.folderStats;
+        const isEmptyFolder = item && item.type === 'folder' && (!stats || stats.totalFiles === 0);
+
         if (isFree) {
             // 自由修改模式：复制 / 剪切 / 粘贴
             addItem('复制', () => doCopy(side));
@@ -2777,7 +2815,7 @@
             addSep();
             addItem('粘贴到此处', () => doPaste(side), !clipboardHasContent());
             addSep();
-            if (item && item.type === 'folder') {
+            if (isEmptyFolder) {
                 addItem('隐藏该空文件夹', () => hideFolder(item, side));
             }
         } else {
@@ -2787,10 +2825,16 @@
             } else {
                 addItem('启用', () => restoreSelection());
             }
-            if (item && item.type === 'folder') {
+            if (isEmptyFolder) {
                 addSep();
                 addItem('隐藏该空文件夹', () => hideFolder(item, side));
             }
+        }
+
+        // 文件 / 文件夹都可以直接在资源管理器中定位
+        if (item) {
+            addSep();
+            addItem('在文件资源管理器中打开', () => revealItemInExplorer(item));
         }
 
         elContextMenu.classList.add('show');
@@ -2943,7 +2987,13 @@
         }
         const result = res.data || {};
         renderOpLogs(result.logs);
-        log(res.message || '隐藏完成。', 'success');
+        if (result.skipped > 0) {
+            // 明确告知为什么没隐藏，而不是让用户以为「点了没反应」
+            const why = (result.logs || []).find(e => e.level === 'warn');
+            showAlert(why ? why.message : '文件夹不是空的，只有空文件夹才能隐藏。', '无法隐藏');
+        } else {
+            log(res.message || '隐藏完成。', 'success');
+        }
         await refreshAll();
     }
 

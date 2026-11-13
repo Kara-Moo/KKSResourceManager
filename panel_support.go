@@ -5,9 +5,7 @@ package main
 // 把这些从 panel.go 拆出来，避免主文件过长。
 
 import (
-	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -68,7 +66,7 @@ func (m *Manager) countSubDirsCached(dir string) int {
 // countCardsCached 统计目录下的直接卡片数。
 func (m *Manager) countCardsCached(dir string) int {
 	snap, err := m.snapshots.ListDir(dir, func(name string, isDir bool) bool {
-		return !isDir && strings.EqualFold(filepath.Ext(name), ".png")
+		return !isDir && core.IsCardFile(name)
 	})
 	if err != nil {
 		return 0
