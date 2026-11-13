@@ -47,6 +47,9 @@ type ZipmodEntry struct {
 	GUID string `json:"guid"`
 	// Deps 该 zipmod 通过 manifest 声明的依赖 GUID
 	Deps []string `json:"deps"`
+	// Rel 它在 mods 下的相对路径（POSIX）。
+	// 隔离后仍保留，用于修复缺失时放回原位。
+	Rel string `json:"rel,omitempty"`
 }
 
 // CardEntry 一个资源卡片（PNG）的索引条目。
@@ -88,6 +91,17 @@ type IndexData struct {
 	// Plugins key = 绝对路径
 	Plugins map[string]*PluginEntry `json:"plugins"`
 
+	// IsolatedZipmods 被隔离到 DEL-zipmod 或 DELED 的 zipmod。
+	//
+	// key = 绝对路径，Rel 存原相对路径（mods 下的位置）。
+	// **惰性扫描**：只在需要时填充（进入 zipmod 模式或执行修复时）。
+	IsolatedZipmods map[string]*ZipmodEntry `json:"isolatedZipmods,omitempty"`
+
+	// OriginRel GUID -> 它在 mods 下的原相对路径。
+	//
+	// 隔离时写入；修复缺失时据此把文件放回原位，未知则放 mods 根。
+	OriginRel map[string]string `json:"originRel,omitempty"`
+
 	// PluginDepMap GUID -> 引用它的 DLL 相对路径列表
 	//
 	// 这份数据是「DLL 反查 zipmod」的唯一依据。
@@ -104,8 +118,10 @@ func NewIndexData(root string) *IndexData {
 		ScannedAt:     time.Now().UnixNano(),
 		Zipmods:       make(map[string]*ZipmodEntry),
 		Cards:         make(map[string]*CardEntry),
-		Plugins:       make(map[string]*PluginEntry),
-		PluginDepMap:  make(map[string][]string),
+		Plugins:         make(map[string]*PluginEntry),
+		PluginDepMap:    make(map[string][]string),
+		IsolatedZipmods: make(map[string]*ZipmodEntry),
+		OriginRel:       make(map[string]string),
 	}
 }
 
@@ -127,4 +143,26 @@ func (d *IndexData) IsCompatible(root string) bool {
 		return false
 	}
 	return true
+}
+
+// EnsureMaps 补齐可能为 nil 的 map，避免后续写入 panic。
+func (d *IndexData) EnsureMaps() {
+	if d.Zipmods == nil {
+		d.Zipmods = make(map[string]*ZipmodEntry)
+	}
+	if d.Cards == nil {
+		d.Cards = make(map[string]*CardEntry)
+	}
+	if d.Plugins == nil {
+		d.Plugins = make(map[string]*PluginEntry)
+	}
+	if d.PluginDepMap == nil {
+		d.PluginDepMap = make(map[string][]string)
+	}
+	if d.IsolatedZipmods == nil {
+		d.IsolatedZipmods = make(map[string]*ZipmodEntry)
+	}
+	if d.OriginRel == nil {
+		d.OriginRel = make(map[string]string)
+	}
 }

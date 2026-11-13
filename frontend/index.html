@@ -373,6 +373,30 @@
             background: #5a6b7b; font-weight: normal;
         }
 
+        /* 计划对话框（§7 两阶段） */
+        .plan-list {
+            max-height: 300px; overflow-y: auto;
+            border: 1px solid var(--line); border-radius: 6px;
+            margin-top: 8px; background: #fbfcfd;
+        }
+        .plan-item {
+            display: flex; align-items: flex-start; gap: 8px;
+            padding: 6px 10px; border-bottom: 1px solid #f0f2f4;
+            font-size: 12px; line-height: 1.5;
+        }
+        .plan-item:last-child { border-bottom: none; }
+        .plan-item input { margin-top: 2px; flex-shrink: 0; }
+        .plan-item .txt { flex: 1; min-width: 0; }
+        .plan-item .g { font-weight: 600; color: var(--text-1); }
+        .plan-item .m { color: var(--text-3); font-size: 11px; }
+        .plan-head {
+            display: flex; justify-content: space-between; align-items: baseline;
+            font-size: 13px; font-weight: 600; margin-top: 12px;
+        }
+        .plan-head:first-child { margin-top: 0; }
+        .plan-sub { font-weight: 400; font-size: 11px; color: var(--text-3); }
+        .plan-blocked { color: #c62828; }
+
         /* 历史窗口（§8.4） */
         .history-modal {
             position: fixed; inset: 0; z-index: 10050;
@@ -539,6 +563,9 @@
             <button class="btn-reset btn-free-only" id="btn-new-folder" style="display:none;">＋ 新建</button>
             <button class="btn-reset btn-free-only" id="btn-rename" style="display:none;">✎ 重命名</button>
             <button class="btn-reset btn-free-only" id="btn-delete" style="display:none; background:#c62828; color:#fff;">🗑 删除</button>
+            <!-- zipmod 管理（仅 zipmod 模式，§7） -->
+            <button class="btn-reset btn-zipmod-only" id="btn-fix-missing" style="display:none; background:#d99e00; color:#fff;">🩹 修复缺失 zipmod</button>
+            <button class="btn-reset btn-zipmod-only" id="btn-isolate-extra" style="display:none;">🧹 隔离多余 zipmod</button>
             <!-- 回收站操作（仅回收站模式） -->
             <button class="btn-reset" id="btn-trash-restore" style="display:none; background:#107c10; color:#fff;">♻ 还原</button>
             <button class="btn-reset" id="btn-trash-purge" style="display:none; background:#c62828; color:#fff;">⚠ 彻底删除</button>
@@ -1478,6 +1505,11 @@
 
         document.getElementById('btn-trash-restore').style.display = isTrash ? 'block' : 'none';
         document.getElementById('btn-trash-purge').style.display = isTrash ? 'block' : 'none';
+
+        // zipmod 管理按钮：仅 zipmod 模式
+        const isZipmod = currentMode === 'zipmod';
+        document.getElementById('btn-fix-missing').style.display = isZipmod ? 'block' : 'none';
+        document.getElementById('btn-isolate-extra').style.display = isZipmod ? 'block' : 'none';
 
         // 隔离/启用在回收站与隐藏模式下禁用
         elBtnExecLeft.disabled = isTrash || isInvisible;

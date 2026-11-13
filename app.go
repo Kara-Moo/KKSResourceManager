@@ -1311,7 +1311,95 @@ func formatBytes(n int64) string {
 }
 
 // ---------------------------------------------------------------------------
-// 9. 辅助接口
+// 9. zipmod 管理（v2.1 §7）
+// ---------------------------------------------------------------------------
+
+// PlanFixMissing 生成「修复缺失 zipmod」的计划（零副作用）。
+func (a *App) PlanFixMissing() string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	plan := manager.PlanFixMissing()
+	if len(plan.Recoverable) == 0 && len(plan.Unrecoverable) == 0 {
+		return ok(plan, "没有缺失的 zipmod")
+	}
+	return ok(plan, fmt.Sprintf("可修复 %d 个，无法修复 %d 个", len(plan.Recoverable), len(plan.Unrecoverable)))
+}
+
+// CommitFixMissing 执行修复：把选中的 zipmod 放回 mods。
+func (a *App) CommitFixMissing(guids []string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	restored, skipped, failed, err := manager.CommitFixMissing(guids)
+	for _, f := range failed {
+		a.emitLog("warn", "fix-missing", f)
+	}
+	if err != nil {
+		return fail(err.Error())
+	}
+	a.emitLog("success", "fix-missing",
+		fmt.Sprintf("[fix-missing] 恢复 %d 个 zipmod，跳过 %d 个", restored, skipped))
+	return ok(map[string]interface{}{
+		"restored": restored,
+		"skipped":  skipped,
+		"failed":   failed,
+	}, fmt.Sprintf("已恢复 %d 个 zipmod。", restored))
+}
+
+// PlanIsolateExtra 生成「隔离多余 zipmod」的计划（零副作用）。
+func (a *App) PlanIsolateExtra() string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	plan := manager.PlanIsolateExtra()
+	if len(plan.Candidates) == 0 {
+		return ok(plan, "没有多余的 zipmod")
+	}
+	return ok(plan, fmt.Sprintf("将隔离 %d 个 zipmod，释放 %s", len(plan.Candidates), formatBytes(plan.TotalBytes)))
+}
+
+// CommitIsolateExtra 执行隔离多余 zipmod。
+func (a *App) CommitIsolateExtra(guids []string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	isolated, bytes, skipped, failed, err := manager.CommitIsolateExtra(guids)
+	for _, f := range failed {
+		a.emitLog("warn", "isolate-extra", f)
+	}
+	if err != nil {
+		return fail(err.Error())
+	}
+	a.emitLog("success", "isolate-extra",
+		fmt.Sprintf("[isolate-extra] 隔离 %d 个，释放 %s，跳过 %d 个",
+			isolated, formatBytes(bytes), skipped))
+	return ok(map[string]interface{}{
+		"isolated": isolated,
+		"bytes":    bytes,
+		"skipped":  skipped,
+		"failed":   failed,
+	}, fmt.Sprintf("已隔离 %d 个 zipmod，释放 %s。", isolated, formatBytes(bytes)))
+}
+
+// ---------------------------------------------------------------------------
+// 10. 辅助接口
 // ---------------------------------------------------------------------------
 
 // GetKKSInfo 返回当前 KKS 根目录与隔离区路径，以及各资源类型的目录映射。

@@ -59,18 +59,7 @@ func (s *Store) Load(root string) (*IndexData, error) {
 		return nil, nil
 	}
 	// 补齐可能为 nil 的 map，避免后续写入 panic
-	if idx.Zipmods == nil {
-		idx.Zipmods = make(map[string]*ZipmodEntry)
-	}
-	if idx.Cards == nil {
-		idx.Cards = make(map[string]*CardEntry)
-	}
-	if idx.Plugins == nil {
-		idx.Plugins = make(map[string]*PluginEntry)
-	}
-	if idx.PluginDepMap == nil {
-		idx.PluginDepMap = make(map[string][]string)
-	}
+	idx.EnsureMaps()
 	return &idx, nil
 }
 
