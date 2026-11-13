@@ -25,6 +25,7 @@ import (
 	"kksresourcemanager/internal/index"
 	"kksresourcemanager/internal/plugin"
 	"kksresourcemanager/internal/preview"
+	"kksresourcemanager/internal/tx"
 )
 
 // ---------------------------------------------------------------------------
@@ -138,6 +139,9 @@ type Manager struct {
 
 	// clipboard 复制/剪切/粘贴剪贴板
 	clipboard *Clipboard
+
+	// currentTx 当前进行中的事务（写操作走事务，红线 N5）
+	currentTx *tx.Tx
 	// invisible 空文件夹隐藏状态索引
 	invisible *InvisibleStore
 }
@@ -516,6 +520,31 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 
 	res := IsolateResult{Logs: make([]OperationLog, 0, 16)}
 
+	// 开启事务：所有文件移动都可撤销（红线 N5）
+	var txn *tx.Tx
+	if len(cardPaths) > 0 {
+		if t, err := m.beginTx("isolate", fmt.Sprintf("隔离 %d 个条目", len(cardPaths))); err == nil {
+			txn = t
+		} else {
+			res.Logs = append(res.Logs, OperationLog{"warn", "无法创建事务：" + err.Error()})
+		}
+	}
+	// 事务开启失败时不阻断操作，但也不提供撤销能力。
+	defer func() {
+		if txn == nil {
+			return
+		}
+		if res.FailedCount == 0 {
+			if err := m.commitTx(txn); err != nil {
+				res.Logs = append(res.Logs, OperationLog{"warn", "提交事务失败：" + err.Error()})
+			}
+		} else {
+			if err := m.rollbackTx(txn); err != nil {
+				res.Logs = append(res.Logs, OperationLog{"error", "回滚失败：" + err.Error()})
+			}
+		}
+	}()
+
 	if len(cardPaths) == 0 {
 		res.Logs = append(res.Logs, OperationLog{"warn", "没有选中任何文件。"})
 		return res
@@ -615,7 +644,7 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("目标已存在，跳过: %s", p.dst)})
 			continue
 		}
-		if err := moveFile(p.src, p.dst); err != nil {
+		if err := m.txMove(txn, p.src, p.dst); err != nil {
 			res.FailedCount++
 			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("移动失败 %s -> %s: %v", p.src, p.dst, err)})
 			continue
@@ -771,6 +800,30 @@ func (m *Manager) Restore(cardPaths []string) RestoreResult {
 
 	res := RestoreResult{Logs: make([]OperationLog, 0, 16)}
 
+	// 开启事务：所有文件移动都可撤销（红线 N5）
+	var txn *tx.Tx
+	if len(cardPaths) > 0 {
+		if t, err := m.beginTx("restore", fmt.Sprintf("恢复 %d 个条目", len(cardPaths))); err == nil {
+			txn = t
+		} else {
+			res.Logs = append(res.Logs, OperationLog{"warn", "无法创建事务：" + err.Error()})
+		}
+	}
+	defer func() {
+		if txn == nil {
+			return
+		}
+		if res.FailedCount == 0 {
+			if err := m.commitTx(txn); err != nil {
+				res.Logs = append(res.Logs, OperationLog{"warn", "提交事务失败：" + err.Error()})
+			}
+		} else {
+			if err := m.rollbackTx(txn); err != nil {
+				res.Logs = append(res.Logs, OperationLog{"error", "回滚失败：" + err.Error()})
+			}
+		}
+	}()
+
 	if len(cardPaths) == 0 {
 		res.Logs = append(res.Logs, OperationLog{"warn", "没有选中任何文件。"})
 		return res
@@ -820,12 +873,12 @@ func (m *Manager) Restore(cardPaths []string) RestoreResult {
 				continue
 			}
 			for _, f := range files {
-				m.restoreSingleFile(f, kind, &res)
+				m.restoreSingleFile(f, kind, &res, txn)
 			}
 			continue
 		}
 
-		m.restoreSingleFile(abs, kind, &res)
+		m.restoreSingleFile(abs, kind, &res, txn)
 	}
 
 	// 清理 DEL 区的空目录（仅隔离区，游戏目录永不删除）
@@ -845,7 +898,7 @@ func (m *Manager) Restore(cardPaths []string) RestoreResult {
 // restoreSingleFile 把隔离区中的单个资源文件移回游戏原目录。
 //
 // 目标父目录若曾被隐藏删除，会先依据隐藏索引重建出来。
-func (m *Manager) restoreSingleFile(abs string, kind ResourceKind, res *RestoreResult) {
+func (m *Manager) restoreSingleFile(abs string, kind ResourceKind, res *RestoreResult, txn *tx.Tx) {
 	_, relDir, ok := m.classifyDelResource(abs)
 	if !ok {
 		res.FailedCount++
@@ -864,7 +917,7 @@ func (m *Manager) restoreSingleFile(abs string, kind ResourceKind, res *RestoreR
 		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("目标已存在，跳过恢复: %s", dst)})
 		return
 	}
-	if err := moveFile(abs, dst); err != nil {
+	if err := m.txMove(txn, abs, dst); err != nil {
 		res.FailedCount++
 		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("恢复失败 %s -> %s: %v", abs, dst, err)})
 		return

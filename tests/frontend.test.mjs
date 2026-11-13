@@ -92,6 +92,15 @@ const mockApp = {
     { seq: 9, ts: Date.now(), level: 'info', scope: 'scan', msg: '测试日志信息' },
     { seq: 10, ts: Date.now(), level: 'error', scope: 'isolate', msg: '测试日志错误' },
   ], total: 2, errors: 1 } }),
+  GetHistory: (offset, limit) => JSON.stringify({ success: true, message: '', data: { entries: [
+    { txId: 'tx1', kind: 'isolate', title: '隔离 3 个条目', at: Date.now() - 60000, affected: 3, bytes: 0, status: 'committed', reverted: false, steps: [{kind:'move',src:'a',dst:'b',state:'done'}] },
+    { txId: 'tx2', kind: 'restore', title: '恢复 1 个条目', at: Date.now() - 30000, affected: 1, bytes: 0, status: 'committed', reverted: false, steps: [{kind:'move',src:'c',dst:'d',state:'done'}] },
+    { txId: 'tx3', kind: 'undo', title: '撤销：隔离 3 个条目', at: Date.now(), affected: 3, bytes: 0, status: 'committed', reverted: false, steps: [] },
+  ], total: 3, max: 200 } }),
+  CmdUndo: (txId) => {
+    window.__calls.push(['CmdUndo', txId]);
+    return JSON.stringify({ success: true, message: '已撤销', data: { ok: true, reverted: 3 } });
+  },
   GetZipmodDetail: (guid) => JSON.stringify({ success: true, message: '', data: { guid, path: 'C:/x.zipmod', base: 'x.zipmod', size: 100, cards: [], plugins: [], refCards: 0, refPlugins: 0, parseErr: '' } }),
   GetFolderPreview: (p) => JSON.stringify({ success: true, message: '', data: {
     stats: { subfolderCount: 2, cardCount: 3, totalFiles: 7, totalSize: 1234 },
@@ -407,6 +416,46 @@ console.log('\n【12】zipmod 占用数：红色数字（v2.1 §11.3）');
   // 不应显示文件大小
   const sizes = await page.locator('#left-list .size').count();
   check('zipmod 行不显示文件大小', sizes === 0, `实际 ${sizes} 个`);
+}
+
+console.log('\n【13】历史窗口：列表 + 撤销（v2.1 §11.6）');
+{
+  const btn = await page.locator('#btn-open-history').count();
+  check('顶栏有「操作记录」按钮', btn === 1);
+
+  await page.locator('#btn-open-history').click();
+  await page.waitForTimeout(400);
+  const shown = await page.locator('#history-modal.show').count();
+  check('点击后历史窗口弹出', shown === 1);
+
+  const rows = await page.locator('#history-body .history-row').count();
+  check('历史列表有 3 条', rows === 3, `实际 ${rows} 条`);
+
+  const foot = await page.locator('#history-foot').innerText();
+  check('底部显示保留条数', foot.includes('保留最近'), `实际 "${foot}"`);
+
+  // 撤销按钮
+  const undoBtns = await page.locator('#history-body .btn-undo').count();
+  check('每行有撤销按钮', undoBtns === 3, `实际 ${undoBtns} 个`);
+
+  // 无步骤的记录（undo 类型）应禁用
+  const disabled = await page.evaluate(() => {
+    const btns = Array.from(document.querySelectorAll('#history-body .btn-undo'));
+    return btns.map(b => b.disabled);
+  });
+  check('无步骤的记录撤销按钮禁用', disabled[2] === true, `实际 ${JSON.stringify(disabled)}`);
+
+  // 筛选：可撤销
+  await page.locator('#history-seg button[data-filter="undoable"]').click();
+  await page.waitForTimeout(300);
+  const undoableRows = await page.locator('#history-body .history-row').count();
+  check('「可撤销」筛选生效', undoableRows === 2, `实际 ${undoableRows} 条`);
+
+  // Esc 关闭
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  const closed = await page.locator('#history-modal.show').count();
+  check('Esc 可关闭历史窗口', closed === 0);
 }
 
 await page.screenshot({ path: path.join(__dirname, '..', 'build', 'frontend-test.png'), fullPage: false });

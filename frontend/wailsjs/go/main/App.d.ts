@@ -3,6 +3,8 @@
 
 export function ClearClipboard():Promise<string>;
 
+export function CmdUndo(arg1:string):Promise<string>;
+
 export function ExecuteIsolate(arg1:Array<string>,arg2:string):Promise<string>;
 
 export function ExecuteRestore(arg1:Array<string>,arg2:string):Promise<string>;
@@ -14,6 +16,8 @@ export function GetClipboard():Promise<string>;
 export function GetFolderPreview(arg1:string):Promise<string>;
 
 export function GetGlobalDepInfo():Promise<string>;
+
+export function GetHistory(arg1:number,arg2:number):Promise<string>;
 
 export function GetInstalledModsData():Promise<string>;
 

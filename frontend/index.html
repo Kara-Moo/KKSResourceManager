@@ -364,6 +364,52 @@
             background: #5a6b7b; font-weight: normal;
         }
 
+        /* 历史窗口（§8.4） */
+        .history-modal {
+            position: fixed; inset: 0; z-index: 10050;
+            background: rgba(16,24,40,.45);
+            display: none; align-items: center; justify-content: center;
+        }
+        .history-modal.show { display: flex; }
+        .history-panel {
+            background: #fff; border-radius: 10px; overflow: hidden;
+            width: 760px; max-width: 92vw; height: 560px; max-height: 82vh;
+            display: flex; flex-direction: column;
+            box-shadow: 0 12px 40px rgba(16,24,40,.24);
+        }
+        .history-head {
+            height: 48px; flex-shrink: 0; display: flex; align-items: center; gap: 12px;
+            padding: 0 16px; border-bottom: 1px solid var(--line);
+        }
+        .history-head .title { font-size: 15px; font-weight: 600; }
+        .history-body { flex: 1; overflow-y: auto; }
+        .history-row {
+            display: flex; align-items: center; gap: 12px;
+            padding: 10px 16px; border-bottom: 1px solid var(--line);
+            font-size: 13px;
+        }
+        .history-row:hover { background: #f7f9fb; }
+        .history-row .t { color: var(--text-3); font-size: 12px; width: 130px; flex-shrink: 0; }
+        .history-row .n { flex: 1; min-width: 0; color: var(--text-1);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .history-row .c { color: var(--text-3); font-size: 12px; width: 130px; flex-shrink: 0; }
+        .history-row .st { width: 78px; flex-shrink: 0; font-size: 12px; text-align: center;
+            border-radius: 4px; padding: 2px 0; }
+        .history-row .st.s-committed { color: #1a7f37; background: #e8f5ec; }
+        .history-row .st.s-reverted   { color: var(--text-3); background: #f0f2f4; }
+        .history-row .st.s-rolledback { color: var(--text-3); background: #f0f2f4; }
+        .history-row .st.s-partial    { color: #c62828; background: #fdecec; }
+        .history-row .btn-undo {
+            flex-shrink: 0; padding: 4px 12px; font-size: 12px;
+            background: #5a6b7b; font-weight: normal;
+        }
+        .history-row .btn-undo:disabled { opacity: .4; cursor: not-allowed; }
+        .history-foot {
+            height: 36px; flex-shrink: 0; display: flex; align-items: center;
+            padding: 0 16px; border-top: 1px solid var(--line);
+            font-size: 12px; color: var(--text-3);
+        }
+
         /* 日志模态 */
         .log-modal {
             position: fixed; inset: 0; z-index: 10050;
@@ -436,6 +482,7 @@
             <h1>KKS 资源管理器</h1>
             <button class="btn-root" id="btn-select-root">📁 选择 KKS 根目录</button>
             <button class="btn-mode mode-safe" id="btn-mode">🛡 安全加载隔离模式</button>
+            <button class="btn-switch" id="btn-open-history" style="padding:6px 12px; font-size:12px;">🕘 操作记录</button>
             <span class="root-label" id="root-label">尚未选择目录</span>
         </div>
         <div class="top-left">
@@ -526,6 +573,24 @@
 
     <!-- Toast 容器 -->
     <div class="toast-stack" id="toast-stack"></div>
+
+    <!-- 历史窗口（v2.1 §8.4） -->
+    <div class="history-modal" id="history-modal">
+        <div class="history-panel">
+            <div class="history-head">
+                <span class="title">操作记录</span>
+                <div class="log-seg" id="history-seg">
+                    <button data-filter="all" class="on">全部</button>
+                    <button data-filter="undoable">可撤销</button>
+                    <button data-filter="reverted">已撤销</button>
+                </div>
+                <span class="spacer" style="flex:1"></span>
+                <button class="act" id="btn-history-close" style="padding:5px 10px;font-size:12px;background:#5a6b7b;font-weight:normal;">×</button>
+            </div>
+            <div class="history-body" id="history-body"></div>
+            <div class="history-foot" id="history-foot">保留最近 200 条记录</div>
+        </div>
+    </div>
 
     <!-- 日志窗口（v2.1 §3.6）：模态面板，非抽屉、非悬浮小窗 -->
     <div class="log-modal" id="log-modal">
@@ -1351,6 +1416,140 @@
     }
 
     // ---------------------------------------------------------------------
+    // 历史窗口（§8.4）
+    // ---------------------------------------------------------------------
+
+    const elHistoryModal = document.getElementById('history-modal');
+    const elHistoryBody = document.getElementById('history-body');
+    const elHistoryFoot = document.getElementById('history-foot');
+
+    let historyEntries = [];
+    let historyFilter = 'all';
+
+    // openHistory 打开历史窗口。
+    async function openHistory() {
+        elHistoryModal.classList.add('show');
+        await reloadHistory();
+    }
+
+    // closeHistory 关闭历史窗口。
+    function closeHistory() {
+        elHistoryModal.classList.remove('show');
+    }
+
+    // reloadHistory 拉取历史并渲染。
+    async function reloadHistory() {
+        const res = await callBackend('GetHistory', 0, 200);
+        if (!res.success) {
+            historyEntries = [];
+        } else {
+            const d = res.data || {};
+            historyEntries = d.entries || [];
+        }
+        renderHistory();
+    }
+
+    // renderHistory 渲染历史列表。
+    function renderHistory() {
+        const rows = historyEntries.filter(e => {
+            if (historyFilter === 'undoable') {
+                return e.status === 'committed' && !e.reverted && (e.steps || []).length > 0;
+            }
+            if (historyFilter === 'reverted') {
+                return e.reverted || e.status === 'reverted';
+            }
+            return true;
+        });
+
+        elHistoryBody.innerHTML = '';
+        if (rows.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'panel-empty';
+            empty.innerText = '暂无操作记录';
+            elHistoryBody.appendChild(empty);
+        }
+
+        rows.forEach(e => {
+            const row = document.createElement('div');
+            row.className = 'history-row';
+
+            const t = document.createElement('span');
+            t.className = 't';
+            t.innerText = formatLogTime(e.at);
+            row.appendChild(t);
+
+            const n = document.createElement('span');
+            n.className = 'n';
+            n.innerText = e.title || e.kind || '';
+            n.title = e.title || '';
+            row.appendChild(n);
+
+            const c = document.createElement('span');
+            c.className = 'c';
+            c.innerText = `影响 ${e.affected || 0} 项`;
+            row.appendChild(c);
+
+            const st = document.createElement('span');
+            st.className = 'st s-' + (e.status || 'committed');
+            st.innerText = historyStatusText(e);
+            row.appendChild(st);
+
+            const btn = document.createElement('button');
+            btn.className = 'btn-undo';
+            btn.innerText = '撤销';
+            const undoable = e.status === 'committed' && !e.reverted && (e.steps || []).length > 0;
+            btn.disabled = !undoable;
+            if (!undoable) {
+                btn.title = e.reverted ? '已撤销' : ((e.steps || []).length === 0 ? '超出可撤销范围' : '不可撤销');
+            }
+            btn.onclick = () => doUndo(e.txId);
+            row.appendChild(btn);
+
+            elHistoryBody.appendChild(row);
+        });
+
+        elHistoryFoot.innerText = `保留最近 ${historyEntries.length} 条记录`;
+    }
+
+    // historyStatusText 把状态码转成中文。
+    function historyStatusText(e) {
+        if (e.reverted || e.status === 'reverted') return '已撤销';
+        switch (e.status) {
+            case 'committed': return '已完成';
+            case 'rolledback': return '已回滚';
+            case 'partial': return '失败';
+            default: return e.status || '';
+        }
+    }
+
+    // doUndo 撤销一个操作。
+    async function doUndo(txId) {
+        showConfirm('撤销操作', '确定要撤销这次操作吗？文件会回到操作前的位置。', async () => {
+            const res = await callBackend('CmdUndo', txId);
+            if (!res.success) {
+                showAlert(res.message || '撤销失败。');
+                return;
+            }
+            toast('已撤销', 'success');
+            await reloadHistory();
+            await refreshAll();
+        }, '撤销');
+    }
+
+    document.getElementById('btn-open-history').onclick = openHistory;
+    document.getElementById('btn-history-close').onclick = closeHistory;
+    elHistoryModal.addEventListener('click', (e) => {
+        if (e.target === elHistoryModal) closeHistory();
+    });
+    document.getElementById('history-seg').addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        historyFilter = btn.dataset.filter;
+        Array.from(document.getElementById('history-seg').children).forEach(b => b.classList.toggle('on', b === btn));
+        renderHistory();
+    });
+
+    // ---------------------------------------------------------------------
     // 日志窗口（§3.6）
     // ---------------------------------------------------------------------
 
@@ -1594,6 +1793,10 @@
         // 日志窗口优先关闭（它是独立模态）
         if (elLogModal && elLogModal.classList.contains('show')) {
             closeLogModal();
+            return;
+        }
+        if (elHistoryModal && elHistoryModal.classList.contains('show')) {
+            closeHistory();
             return;
         }
         if (elModalMask.classList.contains('show')) {
@@ -2158,6 +2361,9 @@
         };
         window.__thumbHandler = handleThumbs;
         window.runtime.EventsOn('thumb:ready', handleThumbs);
+        window.runtime.EventsOn('history:changed', () => {
+            if (elHistoryModal.classList.contains('show')) reloadHistory();
+        });
         window.runtime.EventsOn('scan:complete', (e) => {
             const d = e && e.payload ? e.payload : e;
             if (d.missingMods && d.missingMods.length) {

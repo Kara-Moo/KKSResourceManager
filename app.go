@@ -19,6 +19,7 @@ import (
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"kksresourcemanager/internal/preview"
+	"kksresourcemanager/internal/tx"
 )
 
 // App 是 Wails 应用主体。
@@ -95,7 +96,14 @@ func (a *App) startup(ctx context.Context) {
 		if err := manager.StartThumbQueue(a.notifyThumbsReady); err != nil {
 			a.emitLog("warn", "preview", "缩略图队列启动失败："+err.Error())
 		}
+
 	}
+
+	// 崩溃恢复（§11.6）：自动回滚上次未完成的操作。
+	//
+	// 必须在 manager 存在之前也能执行 —— 用户崩溃后重启、
+	// 尚未重新选择 KKS 根目录时，未完成的事务同样需要还原。
+	a.recoverPendingTx()
 
 	a.ctx = ctx
 }
@@ -1098,7 +1106,73 @@ func (a *App) GetZipmodDetail(guid string) string {
 }
 
 // ---------------------------------------------------------------------------
-// 7. 辅助接口
+// 7. 操作历史与撤销（v2.1 §8）
+// ---------------------------------------------------------------------------
+
+// GetHistory 返回操作历史（最新在前）。
+func (a *App) GetHistory(offset, limit int) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return ok([]tx.HistoryEntry{}, "")
+	}
+	list := manager.GetHistory(offset, limit)
+	return ok(map[string]interface{}{
+		"entries": list,
+		"total":   len(manager.GetHistory(0, 0)) + len(list),
+		"max":     tx.MaxHistory,
+	}, "")
+}
+
+// CmdUndo 撤销一个已提交的操作。
+func (a *App) CmdUndo(txID string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	res, err := manager.CmdUndo(txID)
+	if err != nil {
+		a.emitLog("warn", "history", "撤销失败："+err.Error())
+		return fail(err.Error())
+	}
+	a.emitLog("success", "history", fmt.Sprintf("已撤销操作 %s（%d 步）", txID, res.Reverted))
+	// 通知前端刷新历史窗口
+	if a.ctx != nil {
+		wruntime.EventsEmit(a.ctx, "history:changed", map[string]interface{}{})
+	}
+	return ok(res, fmt.Sprintf("已撤销 %d 个步骤。", res.Reverted))
+}
+
+// recoverPendingTx 恢复未完成的事务（启动时调用）。
+func (a *App) recoverPendingTx() {
+	// 优先用当前 manager 的隔离区；没有 manager 时，扫描常见位置
+	var roots []string
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+	if manager != nil {
+		roots = append(roots, manager.DelCardsRoot)
+	}
+
+	for _, root := range roots {
+		recovered, errs := tx.RecoverPending(root)
+		if recovered > 0 {
+			a.emitLog("warn", "history",
+				fmt.Sprintf("检测到上次未完成的操作，已自动还原 %d 项。", recovered))
+		}
+		for _, e := range errs {
+			a.emitLog("error", "history", "自动还原失败："+e)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 8. 辅助接口
 // ---------------------------------------------------------------------------
 
 // GetKKSInfo 返回当前 KKS 根目录与隔离区路径，以及各资源类型的目录映射。

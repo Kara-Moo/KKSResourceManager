@@ -6,6 +6,10 @@ export function ClearClipboard() {
   return window['go']['main']['App']['ClearClipboard']();
 }
 
+export function CmdUndo(arg1) {
+  return window['go']['main']['App']['CmdUndo'](arg1);
+}
+
 export function ExecuteIsolate(arg1, arg2) {
   return window['go']['main']['App']['ExecuteIsolate'](arg1, arg2);
 }
@@ -28,6 +32,10 @@ export function GetFolderPreview(arg1) {
 
 export function GetGlobalDepInfo() {
   return window['go']['main']['App']['GetGlobalDepInfo']();
+}
+
+export function GetHistory(arg1, arg2) {
+  return window['go']['main']['App']['GetHistory'](arg1, arg2);
 }
 
 export function GetInstalledModsData() {
