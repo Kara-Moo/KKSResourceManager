@@ -2821,9 +2821,11 @@
         } else {
             // 安全加载隔离模式
             if (side === 'left') {
-                addItem('隔离', () => isolateSelection());
+                // 右键某个文件/文件夹：仅对该条目单独隔离，无需提前勾选、也不合并勾选框
+                addItem('隔离', () => isolateSelection(item));
             } else {
-                addItem('启用', () => restoreSelection());
+                // 右键隔离区某项：仅对该条目单独启用，无需提前勾选、也不合并勾选框
+                addItem('启用', () => restoreSelection(item));
             }
             if (isEmptyFolder) {
                 addSep();
@@ -3036,12 +3038,36 @@
     }
 
     // isolateSelection 执行隔离（左侧栏选中项 -> 隔离区）。
-    async function isolateSelection() {
-        if (leftSelected.size === 0) return log('请先在左侧勾选要隔离的文件。', 'warn');
+    // dedupeSelection 去掉「是另一个已选路径后代」的条目。
+    // 勾选文件夹会级联加入其全部子孙路径；这里只保留顶层文件夹，
+    // 让后端按文件夹路径递归搬空整个目录树，避免重复处理并产生多余的空目录结构。
+    // 路径分隔符可能是 / 或 \（Windows），两种都要判断。
+    function dedupeSelection(paths) {
+        return paths.filter(p => !paths.some(q => p !== q && (
+            p === q + '/' || p === q + '\\' ||
+            p.startsWith(q + '/') || p.startsWith(q + '\\')
+        )));
+    }
+
+    // isolateSelection 执行隔离（左侧栏 -> 隔离区）。
+    // - 右键菜单传入 item 时，仅对该条目单独操作：不需要提前勾选，
+    //   也不与已有的勾选框合并（即便已勾选，也只动右键选中的那一个）。
+    // - 否则（中列「确认隔离」按钮）使用左侧勾选集合，保持原有行为。
+    async function isolateSelection(item) {
+        let paths;
+        let fromContext = false;
+        if (item && item.id) {
+            paths = [item.id];
+            fromContext = true;
+        } else {
+            if (leftSelected.size === 0) return log('请先在左侧勾选要隔离的文件。', 'warn');
+            // 多选文件夹时，级联已把子孙路径一并加入；只保留顶层文件夹，
+            // 由后端递归搬空其全部内容，不重复处理、不产生空目录结构。
+            paths = dedupeSelection(Array.from(leftSelected));
+        }
         if (currentMode === 'zipmod') return log('Zipmod 模式为只读视图，无法执行隔离。', 'warn');
         if (currentMode === 'invisible') return log('隐藏的文件夹模式不支持隔离。', 'warn');
 
-        const paths = Array.from(leftSelected);
         log(`--- 开始隔离操作 (${paths.length} 个条目) ---`);
 
         const res = await callBackend('ExecuteIsolate', paths, currentMode);
@@ -3053,18 +3079,32 @@
         renderOpLogs(result.logs);
         log(`隔离完成：资源 ${result.movedCards || 0} 个，MOD ${result.movedMods || 0} 个，保留 MOD ${result.keptMods || 0} 个。`, 'success');
 
-        leftSelected.clear();
+        // 右键单独操作时不清空已存在的勾选，避免误伤用户其它打算；
+        // 仅按钮（基于勾选）路径才在结束后清空勾选集合。
+        if (!fromContext) {
+            leftSelected.clear();
+        }
         resetPanel();
         leftFocus = null;
         await refreshAll();
     }
 
-    // restoreSelection 执行恢复（右侧栏选中项 -> 游戏目录）。
-    async function restoreSelection() {
-        if (rightSelected.size === 0) return log('请先在右侧勾选要恢复的文件。', 'warn');
+    // restoreSelection 执行恢复（右侧栏 -> 游戏目录）。
+    // - 右键菜单传入 item 时，仅对该条目单独操作：不需要提前勾选，也不合并勾选框。
+    // - 否则（中列「恢复启用」按钮）使用右侧勾选集合，保持原有行为。
+    async function restoreSelection(item) {
+        let paths;
+        let fromContext = false;
+        if (item && item.id) {
+            paths = [item.id];
+            fromContext = true;
+        } else {
+            if (rightSelected.size === 0) return log('请先在右侧勾选要恢复的文件。', 'warn');
+            // 多选文件夹时同样去重：只保留顶层文件夹，由后端递归恢复其全部内容。
+            paths = dedupeSelection(Array.from(rightSelected));
+        }
         if (currentMode === 'invisible') return log('隐藏的文件夹模式请使用「恢复隐藏文件夹」按钮。', 'warn');
 
-        const paths = Array.from(rightSelected);
         log(`--- 开始恢复操作 (${paths.length} 个条目) ---`);
 
         const res = await callBackend('ExecuteRestore', paths, currentMode);
@@ -3076,7 +3116,9 @@
         renderOpLogs(result.logs);
         log(`恢复完成：资源 ${result.restoredCards || 0} 个，MOD ${result.restoredMods || 0} 个。`, 'success');
 
-        rightSelected.clear();
+        if (!fromContext) {
+            rightSelected.clear();
+        }
         resetPanel();
         rightFocus = null;
         await refreshAll();

@@ -189,8 +189,14 @@ const mockApp = {
   GetClipboard: () => JSON.stringify({ success: true, message: '', data: { op: '', paths: [] } }),
   ClearClipboard: () => JSON.stringify({ success: true, message: '', data: null }),
   PasteClipboard: () => JSON.stringify({ success: true, message: 'ok', data: { affected: 1, failedCount: 0, logs: [] } }),
-  ExecuteIsolate: () => JSON.stringify({ success: true, message: '', data: { movedCards: 1, movedMods: 0, keptMods: 0, failedCount: 0, logs: [] } }),
-  ExecuteRestore: () => JSON.stringify({ success: true, message: '', data: { restoredCards: 1, restoredMods: 0, failedCount: 0, logs: [] } }),
+  ExecuteIsolate: (paths, mode) => {
+    window.__calls.push(['ExecuteIsolate', paths, mode]);
+    return JSON.stringify({ success: true, message: '', data: { movedCards: paths.length, movedMods: 0, keptMods: 0, failedCount: 0, logs: [] } });
+  },
+  ExecuteRestore: (paths, mode) => {
+    window.__calls.push(['ExecuteRestore', paths, mode]);
+    return JSON.stringify({ success: true, message: '', data: { restoredCards: paths.length, restoredMods: 0, failedCount: 0, logs: [] } });
+  },
   GetScanStatus: () => JSON.stringify({ success: true, message: '', data: { scanning: false } }),
   GetGlobalDepInfo: () => JSON.stringify({ success: true, message: '', data: {} }),
   Rescan: () => JSON.stringify({ success: true, message: 'ok', data: null }),
@@ -1010,6 +1016,114 @@ console.log('\n【24】zipmod 插件引用改为文字说明');
   check('不再渲染插件图标窗格', pluginRows === 0, `实际 ${pluginRows} 行`);
   const cardCells = await page.locator('#panel-sections .panel-cell').count();
   check('引用卡片（含 JPG）仍显示在区域 A', cardCells === 1, `实际 ${cardCells} 个`);
+}
+
+console.log('\n【21】右键隔离/启用：无需勾选、文件夹递归（修复两个 bug）');
+{
+  // 切回角色卡模式（安全加载隔离模式），并重置到根目录
+  await page.selectOption('#mode-select', 'female_card');
+  await page.waitForTimeout(400);
+  // 隔离/启用右键项只在「安全加载隔离模式」出现，确保 opMode 为 safe
+  const opModeNow = await page.evaluate(() => opMode);
+  if (opModeNow !== 'safe') {
+    await page.locator('#btn-mode').click();
+    await page.waitForTimeout(300);
+  }
+  await page.evaluate(async () => { leftCurrentPath = ''; leftSelected.clear(); rightSelected.clear(); await loadLeft(); await loadRight(); });
+  await page.waitForTimeout(300);
+
+  // (a) Bug 1：右键单个文件 → 隔离，不应要求「先勾选」，也不合并勾选框
+  await page.locator('#left-list .list-item[data-type="folder"]').first().dblclick(); // 进入 FolderA
+  await page.waitForTimeout(300);
+  const fileRow = page.locator('#left-list .list-item[data-type="card"]').first(); // card1.png
+  await fileRow.click({ button: 'right' });
+  await page.waitForTimeout(300);
+  let menuItems = await page.locator('#context-menu .menu-item').allInnerTexts();
+  check('文件右键菜单含「隔离」', menuItems.some(t => t.includes('隔离')), menuItems.join('|'));
+  await page.locator('#context-menu .menu-item', { hasText: '隔离' }).click();
+  await page.waitForTimeout(400);
+
+  let calls = await page.evaluate(() => window.__calls.filter(c => c[0] === 'ExecuteIsolate'));
+  check('右键文件隔离已调用 ExecuteIsolate', calls.length === 1, `实际 ${calls.length} 次`);
+  check('调用仅传该文件路径（不依赖勾选框）',
+    calls.length === 1 && Array.isArray(calls[0][1]) && calls[0][1].length === 1 && calls[0][1][0].includes('card1.png'),
+    JSON.stringify(calls));
+
+  // (b) Bug 2：右键文件夹 → 隔离，应传文件夹路径（后端递归隔离其内部 PNG/JPG）
+  await page.evaluate(async () => { leftCurrentPath = ''; leftSelected.clear(); await loadLeft(); });
+  await page.waitForTimeout(300);
+  const folderRow = page.locator('#left-list .list-item[data-type="folder"]').first(); // FolderA
+  await folderRow.click({ button: 'right' });
+  await page.waitForTimeout(300);
+  await page.locator('#context-menu .menu-item', { hasText: '隔离' }).click();
+  await page.waitForTimeout(400);
+
+  calls = await page.evaluate(() => window.__calls.filter(c => c[0] === 'ExecuteIsolate'));
+  const folderCall = calls.find(c => Array.isArray(c[1]) && c[1].length === 1 && c[1][0].includes('FolderA') && !c[1][0].includes('.png'));
+  check('右键文件夹隔离已调用 ExecuteIsolate 且传文件夹路径', !!folderCall, JSON.stringify(calls));
+
+  // (c) 对称：右侧右键文件 → 启用，无需勾选
+  await page.evaluate(() => {
+    window.__rightNodes = [
+      { id: 'C:\\DEL\\female_card\\a.png', name: 'a.png', type: 'card', path: '', mods: [], modNames: [], size: 100 },
+      { id: 'C:\\DEL\\female_card\\FolderX', name: 'FolderX', type: 'folder', path: '', mods: [], modNames: [], size: 0 },
+    ];
+  });
+  await page.evaluate(async () => { await loadRight(); });
+  await page.waitForTimeout(300);
+  const rightFile = page.locator('#right-list .list-item[data-type="card"]').first();
+  await rightFile.click({ button: 'right' });
+  await page.waitForTimeout(300);
+  let rItems = await page.locator('#context-menu .menu-item').allInnerTexts();
+  check('右侧右键菜单含「启用」', rItems.some(t => t.includes('启用')), rItems.join('|'));
+  await page.locator('#context-menu .menu-item', { hasText: '启用' }).click();
+  await page.waitForTimeout(400);
+
+  let rcalls = await page.evaluate(() => window.__calls.filter(c => c[0] === 'ExecuteRestore'));
+  check('右键右侧文件启用已调用 ExecuteRestore', rcalls.length === 1, `实际 ${rcalls.length} 次`);
+  check('启用仅传该文件路径',
+    rcalls.length === 1 && Array.isArray(rcalls[0][1]) && rcalls[0][1].length === 1 && rcalls[0][1][0].includes('a.png'),
+    JSON.stringify(rcalls));
+
+  // (d) 对称：右侧右键文件夹 → 启用，传文件夹路径
+  const rightFolder = page.locator('#right-list .list-item[data-type="folder"]').first();
+  await rightFolder.click({ button: 'right' });
+  await page.waitForTimeout(300);
+  await page.locator('#context-menu .menu-item', { hasText: '启用' }).click();
+  await page.waitForTimeout(400);
+  rcalls = await page.evaluate(() => window.__calls.filter(c => c[0] === 'ExecuteRestore'));
+  const rFolderCall = rcalls.find(c => Array.isArray(c[1]) && c[1].length === 1 && c[1][0].includes('FolderX') && !c[1][0].includes('.png'));
+  check('右键右侧文件夹启用已调用 ExecuteRestore 且传文件夹路径', !!rFolderCall, JSON.stringify(rcalls));
+}
+
+console.log('\n【22】多选文件夹：按钮隔离只传顶层文件夹（递归搬空，无空结构）');
+{
+  // 安全模式 + 角色卡模式 + 根目录
+  await page.evaluate(async () => { leftCurrentPath = ''; leftSelected.clear(); await loadLeft(); });
+  await page.waitForTimeout(300);
+
+  // 勾选 FolderA（级联会加入其全部子孙路径）
+  const folderCb = page.locator('#left-list .list-item[data-type="folder"]').first().locator('input[type=checkbox]'); // FolderA
+  await folderCb.check();
+  await page.waitForTimeout(200);
+
+  const selCount = await page.evaluate(() => leftSelected.size);
+  check('勾选文件夹级联加入子孙路径', selCount >= 3, `实际 ${selCount} 项`);
+
+  // 点「确认隔离」按钮（多选路径）
+  const beforeCount = await page.evaluate(() => window.__calls.filter(c => c[0] === 'ExecuteIsolate').length);
+  await page.locator('#btn-exec-left').click();
+  await page.waitForTimeout(400);
+
+  const calls = await page.evaluate(() => window.__calls.filter(c => c[0] === 'ExecuteIsolate'));
+  check('按钮隔离新触发一次 ExecuteIsolate', calls.length === beforeCount + 1, `之前 ${beforeCount} 次，现在 ${calls.length}`);
+  if (calls.length === beforeCount + 1) {
+    const passed = calls[calls.length - 1][1];
+    const hasFolder = passed.some(p => p.includes('FolderA') && !p.includes('.png'));
+    const hasFile = passed.some(p => p.includes('.png'));
+    check('传递了顶层文件夹路径（由后端递归搬空）', hasFolder, JSON.stringify(passed));
+    check('未把子孙文件单独重复传递（避免产生空目录结构）', !hasFile, JSON.stringify(passed));
+  }
 }
 
 await page.screenshot({ path: path.join(__dirname, '..', 'build', 'frontend-test.png'), fullPage: false });
