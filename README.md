@@ -32,6 +32,7 @@
 - [14. 版本演进](#14-版本演进)
 - [15. 已知限制与注意事项](#15-已知限制与注意事项)
 - [16. 致谢](#16-致谢)
+- [17. 许可证](#17-许可证)
 
 ---
 
@@ -391,7 +392,7 @@ node tests/frontend.test.mjs        # 真实浏览器交互测试（需 Playwrig
 KKS_REAL_ROOT="E:\KKV114" go test -run TestReal -v -timeout 10m
 ```
 
-### 测试体系
+## 13. 测试体系
 
 | 层 | 内容 |
 |---|---|
@@ -402,7 +403,7 @@ KKS_REAL_ROOT="E:\KKV114" go test -run TestReal -v -timeout 10m
 
 ---
 
-## 13. 版本演进
+## 14. 版本演进
 
 | 版本 | 主要内容 |
 |---|---|
@@ -415,7 +416,7 @@ KKS_REAL_ROOT="E:\KKV114" go test -run TestReal -v -timeout 10m
 
 ---
 
-## 14. 已知限制与注意事项
+## 15. 已知限制与注意事项
 
 - **仅支持 Windows**：磁盘空间检查使用 `GetDiskFreeSpaceEx`，其它平台有占位实现；界面依赖 WebView2。
 - **首次使用务必备份**：工具会移动真实文件。虽然所有操作可撤销、可还原，仍建议先备份 `UserData` 与 `mods`。
@@ -428,11 +429,19 @@ KKS_REAL_ROOT="E:\KKV114" go test -run TestReal -v -timeout 10m
 
 ---
 
-## 15. 致谢
+## 16. 致谢
 
 - [GenesisAN/KKCardModCheck](https://github.com/GenesisAN/KKCardModCheck) —— 卡片依赖解析与 zipmod manifest 解析的参考实现
 - [GenesisAN/illusionsCard](https://github.com/GenesisAN/illusionsCard) —— PNG 尾部数据读取与卡片结构解码库
 - [Wails](https://wails.io/) —— Go + WebView2 桌面应用框架
+
+---
+
+## 17. 许可证
+
+本项目采用 [MIT License](LICENSE)（Copyright © 2026 Kara_Moo）。
+
+第三方依赖各自遵循其原有许可证；`reference/` 目录内的参考源码仅供本地溯源，不参与编译，也未随仓库分发。
 
 ---
 
