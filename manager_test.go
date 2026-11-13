@@ -108,9 +108,9 @@ func TestIsolateKeepsSharedMod(t *testing.T) {
 	// 手工构造依赖图：两个文件都依赖同一个 GUID
 	m := env.manager
 	m.Scanned = true
-	m.GlobalDepMap["shared.guid"] = []string{cardA, cardB}
 	m.FileDeps[cardA] = []string{"shared.guid"}
 	m.FileDeps[cardB] = []string{"shared.guid"}
+	m.derive()
 
 	// 模拟一个 mods 目录中的 zipmod
 	modPath := filepath.Join(m.ModsDir(), "shared.zipmod")
@@ -148,8 +148,8 @@ func TestIsolateMovesOrphanMod(t *testing.T) {
 
 	m := env.manager
 	m.Scanned = true
-	m.GlobalDepMap["orphan.guid"] = []string{card}
 	m.FileDeps[card] = []string{"orphan.guid"}
+	m.derive()
 
 	modPath := filepath.Join(m.ModsDir(), "orphan.zipmod")
 	writeFile(t, modPath, "mod")
@@ -286,9 +286,9 @@ func TestIsolateAcrossBatches(t *testing.T) {
 	writeFile(t, cardB, "b")
 
 	m.Scanned = true
-	m.GlobalDepMap["shared.guid"] = []string{cardA, cardB}
 	m.FileDeps[cardA] = []string{"shared.guid"}
 	m.FileDeps[cardB] = []string{"shared.guid"}
+	m.derive()
 
 	modPath := filepath.Join(m.ModsDir(), "shared.zipmod")
 	writeFile(t, modPath, "mod")
@@ -326,9 +326,9 @@ func TestIsolateMultipleSelectedSharingMod(t *testing.T) {
 	writeFile(t, cardB, "b")
 
 	m.Scanned = true
-	m.GlobalDepMap["shared.guid"] = []string{cardA, cardB}
 	m.FileDeps[cardA] = []string{"shared.guid"}
 	m.FileDeps[cardB] = []string{"shared.guid"}
+	m.derive()
 
 	modPath := filepath.Join(m.ModsDir(), "shared.zipmod")
 	writeFile(t, modPath, "mod")
@@ -386,8 +386,8 @@ func TestRestoreZipmod(t *testing.T) {
 
 	m := env.manager
 	m.Scanned = true
-	m.GlobalDepMap["lonely.guid"] = []string{card}
 	m.FileDeps[card] = []string{"lonely.guid"}
+	m.derive()
 	modPath := filepath.Join(m.ModsDir(), "lonely.zipmod")
 	writeFile(t, modPath, "mod")
 	m.ZipmodDB["lonely.guid"] = modPath

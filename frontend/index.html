@@ -108,6 +108,55 @@
         }
         .btn-hide-folder:hover { background: #e0e0e0; border-color: #bbb; filter: none; }
 
+        /* 对话框体系 */
+        .modal-mask {
+            position: fixed; inset: 0;
+            background: rgba(16,24,40,.45);
+            display: none; align-items: center; justify-content: center;
+            z-index: 10000;
+        }
+        .modal-mask.show { display: flex; }
+        .modal-panel {
+            background: #fff; border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(16,24,40,.12);
+            width: 440px; max-width: 90vw; max-height: 80vh;
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+        .modal-head {
+            padding: 14px 18px; font-size: 15px; font-weight: 600;
+            border-bottom: 1px solid #e6e8eb;
+        }
+        .modal-body { padding: 16px 18px; font-size: 13px; line-height: 1.6; overflow-y: auto; }
+        .modal-foot {
+            padding: 12px 18px; display: flex; justify-content: flex-end; gap: 8px;
+            border-top: 1px solid #e6e8eb;
+        }
+        .modal-foot button { padding: 7px 16px; font-size: 13px; font-weight: normal; background: #5a6b7b; }
+        .modal-foot button.btn-primary { background: #2f6feb; }
+        .modal-foot button.btn-danger { background: #c62828; }
+        .modal-list {
+            margin-top: 8px; max-height: 220px; overflow-y: auto;
+            background: #f6f7f9; border: 1px solid #e6e8eb; border-radius: 6px;
+            padding: 8px 10px; font-size: 12px; font-family: Consolas, monospace;
+        }
+        .modal-list div { padding: 2px 0; word-break: break-all; }
+
+        /* Toast 轻提示 */
+        .toast-stack {
+            position: fixed; right: 18px; bottom: 18px; z-index: 10001;
+            display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+        }
+        .toast {
+            background: #1f2329; color: #fff; padding: 9px 14px;
+            border-radius: 6px; font-size: 13px; max-width: 380px;
+            box-shadow: 0 4px 14px rgba(16,24,40,.2);
+            animation: toast-in .18s ease-out;
+        }
+        .toast.toast-success { background: #1a7f37; }
+        .toast.toast-warn { background: #9a6700; }
+        .toast.toast-error { background: #c62828; }
+        @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
         /* 右键菜单 */
         .context-menu {
             position: fixed;
@@ -301,6 +350,18 @@
 
     <!-- 右键菜单 -->
     <div class="context-menu" id="context-menu"></div>
+
+    <!-- 模态对话框 -->
+    <div class="modal-mask" id="modal-mask">
+        <div class="modal-panel">
+            <div class="modal-head" id="modal-title">提示</div>
+            <div class="modal-body" id="modal-body"></div>
+            <div class="modal-foot" id="modal-foot"></div>
+        </div>
+    </div>
+
+    <!-- Toast 容器 -->
+    <div class="toast-stack" id="toast-stack"></div>
 
 <script>
     // =====================================================================
@@ -717,12 +778,19 @@
 
             if (item.type === 'folder') {
                 // 文件夹右侧的隐藏按钮（眼睛带斜杠）
-                const hideBtn = document.createElement('button');
-                hideBtn.className = 'btn-hide-folder row-action';
-                hideBtn.dataset.action = 'hide';
-                hideBtn.title = '隐藏该空文件夹';
-                hideBtn.innerHTML = '🚫👁';
-                div.appendChild(hideBtn);
+                //
+                // §9.6：只有**递归文件数为 0** 的空文件夹才渲染隐藏按钮。
+                // 数据来自后端 FolderStats.totalFiles，不额外扫盘。
+                const stats = item.folderStats;
+                const isEmpty = !stats || stats.totalFiles === 0;
+                if (isEmpty) {
+                    const hideBtn = document.createElement('button');
+                    hideBtn.className = 'btn-hide-folder row-action';
+                    hideBtn.dataset.action = 'hide';
+                    hideBtn.title = '隐藏该空文件夹';
+                    hideBtn.innerHTML = '🚫👁';
+                    div.appendChild(hideBtn);
+                }
             } else if (item.type === 'hidden') {
                 // 隐藏项用灰色小标签区分，不靠图标
                 const tag = document.createElement('span');
@@ -829,6 +897,118 @@
     // ---------------------------------------------------------------------
     // 隔离 / 恢复
     // ---------------------------------------------------------------------
+
+    // ---------------------------------------------------------------------
+    // 对话框体系（§11.6）
+    //
+    // 硬要求：后端返回 success:false 且属于「用户操作失败」时，
+    // 必须弹 Alert 或 Conflict，不允许只 log()。
+    // 这是用户抱怨「粘贴出错不会弹窗提示」的直接修复。
+    // ---------------------------------------------------------------------
+
+    const elModalMask = document.getElementById('modal-mask');
+    const elModalTitle = document.getElementById('modal-title');
+    const elModalBody = document.getElementById('modal-body');
+    const elModalFoot = document.getElementById('modal-foot');
+    const elToastStack = document.getElementById('toast-stack');
+
+    // closeModal 关闭模态框。
+    function closeModal() {
+        elModalMask.classList.remove('show');
+        elModalBody.innerHTML = '';
+        elModalFoot.innerHTML = '';
+    }
+
+    // openModal 打开模态框。
+    //
+    // buttons: [{ label, kind, onClick }]，onClick 返回 false 时不关闭。
+    function openModal(title, bodyHtml, buttons) {
+        elModalTitle.innerText = title;
+        elModalBody.innerHTML = bodyHtml;
+        elModalFoot.innerHTML = '';
+        (buttons || [{ label: '知道了' }]).forEach(b => {
+            const btn = document.createElement('button');
+            btn.innerText = b.label;
+            if (b.kind) btn.className = 'btn-' + b.kind;
+            btn.onclick = () => {
+                if (b.onClick) {
+                    const keep = b.onClick();
+                    if (keep === false) return;
+                }
+                closeModal();
+            };
+            elModalFoot.appendChild(btn);
+        });
+        elModalMask.classList.add('show');
+    }
+
+    // showAlert 阻断性错误提示 —— 用户必须看到。
+    function showAlert(message, title) {
+        log(message, 'err');
+        openModal(title || '操作失败', `<div>${escapeHtml(message)}</div>`, [{ label: '知道了', kind: 'primary' }]);
+    }
+
+    // showConfirm 二次确认。
+    function showConfirm(title, message, onConfirm, confirmLabel) {
+        openModal(title, `<div>${escapeHtml(message)}</div>`, [
+            { label: '取消' },
+            { label: confirmLabel || '确定', kind: 'danger', onClick: onConfirm },
+        ]);
+    }
+
+    // showConflict 冲突清单（§6.4）。
+    //
+    // conflicts: [{ src, dst, reason }]，onResolve 接收处置方式。
+    function showConflict(title, conflicts, onResolve) {
+        const shown = conflicts.slice(0, 10);
+        let html = `<div>共发现 <b>${conflicts.length}</b> 项冲突，操作未执行。</div>`;
+        html += '<div class="modal-list">';
+        shown.forEach(c => {
+            html += `<div>${escapeHtml(c.dst || '')}<br>${escapeHtml(c.reason || '目标已存在')}</div>`;
+        });
+        html += '</div>';
+        if (conflicts.length > shown.length) {
+            html += `<div style="margin-top:6px;color:#8b95a1;">还有 ${conflicts.length - shown.length} 项未显示</div>`;
+        }
+        openModal(title, html, [
+            { label: '取消' },
+            { label: '跳过冲突项', onClick: () => onResolve('skip') },
+            { label: '全部取消', kind: 'danger', onClick: () => onResolve('abort') },
+        ]);
+    }
+
+    // toast 轻提示，右下角堆叠，最多 3 条，2.5s 自动消失。
+    function toast(message, kind) {
+        const t = document.createElement('div');
+        t.className = 'toast' + (kind ? ' toast-' + kind : '');
+        t.innerText = message;
+        elToastStack.appendChild(t);
+        while (elToastStack.children.length > 3) {
+            elToastStack.removeChild(elToastStack.firstChild);
+        }
+        setTimeout(() => {
+            if (t.parentNode) t.parentNode.removeChild(t);
+        }, 2500);
+    }
+
+    // escapeHtml 转义 HTML，避免把路径里的尖括号当标签解析。
+    function escapeHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    // 点击遮罩关闭；Esc 关闭
+    elModalMask.addEventListener('click', (e) => {
+        if (e.target === elModalMask) closeModal();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && elModalMask.classList.contains('show')) {
+            closeModal();
+        }
+    });
 
     // ---------------------------------------------------------------------
     // 列表事件委托
@@ -1020,7 +1200,7 @@
         }
         const res = await callBackend('SetClipboard', 'copy', paths, sideToBackend(side), currentMode);
         if (!res.success) {
-            log(res.message || '复制失败。', 'err');
+            showAlert(res.message || '复制失败。');
             return;
         }
         clipboardState = res.data || { op: 'copy', paths };
@@ -1036,7 +1216,7 @@
         }
         const res = await callBackend('SetClipboard', 'cut', paths, sideToBackend(side), currentMode);
         if (!res.success) {
-            log(res.message || '剪切失败。', 'err');
+            showAlert(res.message || '剪切失败。');
             return;
         }
         clipboardState = res.data || { op: 'cut', paths };
@@ -1077,7 +1257,7 @@
 
         const res = await callBackend('PasteClipboard', targetDir, sideToBackend(side), currentMode);
         if (!res.success) {
-            log(res.message || '粘贴失败。', 'err');
+            showAlert(res.message || '粘贴失败。');
             return;
         }
         const result = res.data || {};
@@ -1115,7 +1295,7 @@
         }
         const res = await callBackend('HideFolders', [item.id], sideToBackend(side));
         if (!res.success) {
-            log(res.message || '隐藏失败。', 'err');
+            showAlert(res.message || '隐藏失败。');
             return;
         }
         const result = res.data || {};
@@ -1137,7 +1317,7 @@
         });
         const res = await callBackend('RestoreInvisibleFolders', paths);
         if (!res.success) {
-            log(res.message || '恢复失败。', 'err');
+            showAlert(res.message || '恢复失败。');
             return;
         }
         const result = res.data || {};
@@ -1169,7 +1349,7 @@
 
         const res = await callBackend('ExecuteIsolate', paths, currentMode);
         if (!res.success) {
-            log(res.message || '隔离操作失败。', 'err');
+            showAlert(res.message || '隔离操作失败。');
             return;
         }
         const result = res.data || {};
@@ -1192,7 +1372,7 @@
 
         const res = await callBackend('ExecuteRestore', paths, currentMode);
         if (!res.success) {
-            log(res.message || '恢复操作失败。', 'err');
+            showAlert(res.message || '恢复操作失败。');
             return;
         }
         const result = res.data || {};
@@ -1283,7 +1463,7 @@
         if (data.valid === false) {
             // 目录结构不符合预设：加载错误，进度条中止变黄
             setStatus('error', '加载错误');
-            log(res.message || '加载错误：目录结构不符合预设。', 'err');
+            showAlert(res.message || '加载错误：目录结构不符合预设。', '加载错误');
             if (data.missing && data.missing.length) {
                 log('缺少必需的目录: ' + data.missing.join('、'), 'err');
             }
@@ -1310,13 +1490,13 @@
         const res = await callBackend('Rescan');
         if (!res.success) {
             setStatus('error', '加载错误');
-            log(res.message || '重新扫描失败。', 'err');
+            showAlert(res.message || '重新扫描失败。');
             return;
         }
         const data = res.data || {};
         if (data.valid === false) {
             setStatus('error', '加载错误');
-            log(res.message || '加载错误：目录结构不符合预设。', 'err');
+            showAlert(res.message || '加载错误：目录结构不符合预设。', '加载错误');
             if (data.missing && data.missing.length) {
                 log('缺少必需的目录: ' + data.missing.join('、'), 'err');
             }

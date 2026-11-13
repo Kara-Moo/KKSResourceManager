@@ -48,10 +48,9 @@ func TestEndToEndScanIsolateRestore(t *testing.T) {
 		t.Fatalf("应索引到 2 个 zipmod，实际 %d", result.ZipmodCount)
 	}
 	// 卡片是伪造的 PNG，无法解析出真实依赖，这里直接注入依赖关系模拟
-	m.GlobalDepMap["guid.a"] = []string{cardShared, cardSole}
-	m.GlobalDepMap["guid.b"] = []string{cardSole}
 	m.FileDeps[cardShared] = []string{"guid.a"}
 	m.FileDeps[cardSole] = []string{"guid.a", "guid.b"}
+	m.derive()
 
 	// --- 隔离 cardShared ---
 	// guid.a 仍被 cardSole 引用 -> 保留

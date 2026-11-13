@@ -546,12 +546,17 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 		}
 		res.MovedCards++
 		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[移动资源] %s -> %s", p.src, p.dst)})
-		// 记录隔离区内的依赖信息，供右侧预览使用；随后从全局依赖图移除该文件的引用
+		// 记录隔离区内的依赖信息，供右侧预览使用；随后从正向索引移除该文件
 		if deps, ok := m.FileDeps[p.src]; ok {
 			m.DelFileDeps[p.dst] = deps
 		}
 		m.removeDep(p.src)
 	}
+
+	// 资源移动完成后重新派生反向依赖图。
+	// 必须在下一步「判定哪些 zipmod 可移走」之前完成 ——
+	// 否则判定会读到尚未移除旧引用的过期数据，导致本该可隔离的 mod 被误保留。
+	m.rebuildDepIndex()
 
 	// --- 4. 判定哪些 zipmod 可以安全移走 ---
 	// 关键：移除被勾选文件的引用后，若 GUID 仍被任何其它文件引用，则原地保留。
@@ -925,7 +930,13 @@ func (m *Manager) cleanEmptyDirs(root string) int {
 // ---------------------------------------------------------------------------
 
 // moveFile 移动文件，优先使用 rename（同盘高效），
-// 跨设备时退化为“复制 -> 校验 -> 删除源文件”，且绝不覆盖已存在的目标。
+// 跨设备时退化为"复制 -> 校验 -> 删除源文件"，且绝不覆盖已存在的目标。
+//
+// §3.7 修复要点：
+//   - 跨盘复制前检查目标盘剩余空间是否足够（源大小 × 1.1）；
+//   - 删除源文件失败时，**必须删除已创建的目标副本**，
+//     否则用户会看到同一份文件在两处同时存在，且没有任何记录说明发生了什么；
+//   - 复制后校验大小不一致时，同样清理半成品目标。
 func moveFile(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
@@ -944,6 +955,12 @@ func moveFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
+
+	// 空间预检：目标盘剩余空间需 >= 源大小 × 1.1
+	if err := checkFreeSpace(filepath.Dir(dst), srcInfo.Size()); err != nil {
+		return err
+	}
+
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -968,11 +985,26 @@ func moveFile(src, dst string) error {
 		os.Remove(dst)
 		return err
 	}
-	// 校验大小一致后再删除源文件
-	if dstInfo, err := os.Stat(dst); err == nil && dstInfo.Size() == srcInfo.Size() {
-		return os.Remove(src)
+
+	// 校验大小一致
+	dstInfo, statErr := os.Stat(dst)
+	if statErr != nil || dstInfo.Size() != srcInfo.Size() {
+		// 半成品：清理掉，绝不留下不完整的副本
+		os.Remove(dst)
+		return fmt.Errorf("复制后文件大小不一致，已保留源文件并清理目标副本")
 	}
-	return fmt.Errorf("复制后文件大小不一致，已保留源文件")
+
+	// 删除源文件
+	if err := os.Remove(src); err != nil {
+		// 删源失败 → 目标已存在副本会造成"双份文件"。
+		// 此时回滚：删除目标副本，让磁盘回到操作前的状态。
+		if rmErr := os.Remove(dst); rmErr != nil {
+			return fmt.Errorf("移动失败：无法删除源文件(%v)，且无法回滚目标副本(%v)，请手动检查 %s",
+				err, rmErr, dst)
+		}
+		return fmt.Errorf("移动失败：无法删除源文件(%v)，已回滚目标副本，文件保持原位: %s", err, src)
+	}
+	return nil
 }
 
 func copyAll(dst *os.File, src *os.File) (int64, error) {

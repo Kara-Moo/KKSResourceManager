@@ -368,7 +368,8 @@ func TestPasteZipmodBlockedWhenReferenced(t *testing.T) {
 
 	card := env.femaleCard("a.png")
 	writeFile(t, card, "card")
-	m.GlobalDepMap["used.guid"] = []string{card}
+	m.FileDeps[card] = []string{"used.guid"}
+	m.derive()
 
 	// 粘贴到隔离区 —— 应被依赖检查拦截
 	dstDir := m.DelZipmodDir()
