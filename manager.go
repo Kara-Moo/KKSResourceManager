@@ -11,6 +11,7 @@ package main
 //  3. 恢复时把文件放回原位（目录不存在则重建）；DEL 区空目录可清理，游戏目录永不删除。
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +20,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"kksresourcemanager/internal/index"
+	"kksresourcemanager/internal/plugin"
 )
 
 // ---------------------------------------------------------------------------
@@ -109,6 +113,13 @@ type Manager struct {
 	// Scanned 是否已完成一次全量扫描
 	Scanned bool
 
+	// index 持久化索引（正向数据 + 插件信息）
+	index *index.IndexData
+	// derived 由正向数据派生的反向索引
+	derived *index.Derived
+	// PluginDepMap GUID -> 硬编码引用它的 DLL 相对路径（第二道防线的依据）
+	PluginDepMap map[string][]string
+
 	// clipboard 复制/剪切/粘贴剪贴板
 	clipboard *Clipboard
 	// invisible 空文件夹隐藏状态索引
@@ -142,6 +153,7 @@ func NewManager(kksRoot string) (*Manager, error) {
 		FileDeps:     make(map[string][]string),
 		DelFileDeps:  make(map[string][]string),
 		ModDeps:      make(map[string][]string),
+		PluginDepMap: make(map[string][]string),
 		clipboard:    &Clipboard{},
 	}
 	if err := m.EnsureDelDirs(); err != nil {
@@ -255,6 +267,14 @@ type ScanResult struct {
 	FailedZipmods  int
 	MissingMods   []string
 	ScanDurationMS int64
+	// Reused 本次复用的索引条目数（零 IO）
+	Reused int
+	// Parsed 本次实际解析的文件数
+	Parsed int
+	// Removed 从索引移除的条目数
+	Removed int
+	// ScanWarning 保存索引时的警告（不影响本次使用）
+	ScanWarning string
 }
 
 // ScanAll 执行全量扫描：
@@ -269,96 +289,121 @@ func (m *Manager) ScanAll(progress func(phase string, done, total int)) ScanResu
 	start := nowMS()
 	result := ScanResult{}
 
-	// --- 第一步：索引 mods 目录 ---
-	zipmodDB := make(map[string]string)
-	modDeps := make(map[string][]string)
-	failedZipmods := 0
-
-	modFiles := m.collectFiles(m.ModsDir(), func(path string) bool {
-		return strings.EqualFold(filepath.Ext(path), zipmodExt)
-	})
-
-	for i, path := range modFiles {
-		if progress != nil {
-			progress("zipmod", i+1, len(modFiles))
-		}
-		manifest, err := ReadModManifest(path)
-		guid := strings.TrimSpace(manifest.GUID)
-		if err != nil || guid == "" {
-			failedZipmods++
-			continue
-		}
-		// 同一 GUID 出现多个 zipmod 时保留第一个，避免误移动
-		if _, exists := zipmodDB[guid]; !exists {
-			zipmodDB[guid] = path
-		}
-		if deps := ReadModManifestDependencies(path); deps != nil {
-			modDeps[path] = deps
-		}
+	// --- 准备索引存储与扫描器 ---
+	store, err := index.NewStore(m.DelCardsRoot)
+	if err != nil {
+		result.FailedFiles = 1
+		result.ScanDurationMS = nowMS() - start
+		return result
 	}
+	// 加载旧索引（不存在/损坏/版本不符时返回 nil，触发全量重建）
+	old, _ := store.Load(m.KksRoot)
 
-	// --- 第二步：扫描资源文件，构建正向依赖索引 ---
-	// 反向图不在此构建，扫描结束后由 derive() 统一派生。
-	fileDeps := make(map[string][]string)
-	resourceCount := 0
-	failedFiles := 0
-
-	// 先统计资源文件总数，便于进度条按整体进度推进
-	resourceFiles := make([][]string, 0, len(ResourceKinds))
-	totalResources := 0
-	for _, kind := range ResourceKinds {
-		srcDir := m.SourceDir(kind)
-		files := m.collectFiles(srcDir, func(path string) bool {
-			return strings.EqualFold(filepath.Ext(path), kind.FileExt)
-		})
-		resourceFiles = append(resourceFiles, files)
-		totalResources += len(files)
-	}
-
-	processed := 0
-	for _, files := range resourceFiles {
-		for _, path := range files {
-			processed++
-			if progress != nil {
-				progress("resource", processed, totalResources)
+	scanner := &index.Scanner{
+		Root:  m.KksRoot,
+		ModsDir: m.ModsDir(),
+		ResourceRoots: m.resourceRoots(),
+		PluginRoots:  m.pluginRoots(),
+		ParseZipmod: func(path string) (string, []string, error) {
+			manifest, err := ReadModManifest(path)
+			guid := strings.TrimSpace(manifest.GUID)
+			deps := ReadModManifestDependencies(path)
+			if err != nil && guid == "" {
+				return "", nil, err
 			}
-			resourceCount++
-			guids, err := ParseCardGUIDs(path)
-			if err != nil {
-				failedFiles++
-				guids = nil
-			}
-			if len(guids) == 0 {
-				continue
-			}
-			fileDeps[path] = guids
-		}
+			return guid, deps, nil
+		},
+		ParseCard: func(path string) ([]string, error) {
+			return ParseCardGUIDs(path)
+		},
+		MatchPlugin: func(path string, guids []string) ([]string, error) {
+			return plugin.MatchGUIDsInFile(path, guids)
+		},
 	}
 
-	// --- 第三步：写入索引并派生反向图 ---
-	m.ZipmodDB = zipmodDB
-	m.ModDeps = modDeps
-	m.FileDeps = fileDeps
-	// 反向依赖图由正向数据现算（单一真源原则，见 derive.go）
-	m.rebuildDepIndex()
-
-	// --- 第四步：统计本地缺失的 mod ---
-	for guid := range m.GlobalDepMap {
-		if _, ok := m.ZipmodDB[guid]; !ok {
-			result.MissingMods = append(result.MissingMods, guid)
-		}
+	// --- 执行增量扫描 ---
+	idx, derived, stats, scanErr := scanner.Scan(context.Background(), old, progress)
+	if scanErr != nil {
+		result.FailedFiles = 1
+		result.ScanDurationMS = nowMS() - start
+		return result
 	}
-	sort.Strings(result.MissingMods)
 
-	m.Scanned = true
+	// --- 插件扫描（第二道防线的数据来源） ---
+	guidSet := index.GUIDSetOf(idx)
+	if err := scanner.PluginMatches(context.Background(), idx, guidSet, progress); err == nil {
+		// 插件索引更新后重新派生
+		derived = index.Derive(idx)
+	}
 
-	result.ZipmodCount = len(zipmodDB)
-	result.ResourceCount = resourceCount
-	result.DepGUIDCount = len(m.GlobalDepMap)
-	result.FailedFiles = failedFiles
-	result.FailedZipmods = failedZipmods
+	// --- 原子保存索引（失败只记警告，不影响本次使用） ---
+	if err := store.Save(idx); err != nil {
+		result.ScanWarning = err.Error()
+	}
+
+	// --- 写入内存状态 ---
+	m.applyIndex(idx, derived)
+
+	result.ZipmodCount = len(idx.Zipmods)
+	result.ResourceCount = len(idx.Cards)
+	result.DepGUIDCount = len(derived.GlobalDepMap)
+	result.FailedFiles = stats.Failed
+	result.MissingMods = derived.MissingGUIDs
 	result.ScanDurationMS = nowMS() - start
+	result.Reused = stats.Reused
+	result.Parsed = stats.Parsed
+	result.Removed = stats.Removed
 	return result
+}
+
+// resourceRoots 返回各资源类型的源目录映射。
+func (m *Manager) resourceRoots() map[string]string {
+	roots := make(map[string]string, len(ResourceKinds))
+	for _, k := range ResourceKinds {
+		roots[k.Mode] = m.SourceDir(k)
+	}
+	return roots
+}
+
+// pluginRoots 返回 BepInEx 插件目录（第二道防线的扫描范围）。
+func (m *Manager) pluginRoots() []string {
+	return []string{
+		filepath.Join(m.KksRoot, "BepInEx", "plugins"),
+		filepath.Join(m.KksRoot, "BepInEx", "core"),
+	}
+}
+
+// applyIndex 把索引结果写入 Manager 的内存状态。
+//
+// 反向依赖图直接采用派生结果，不再由正向数据二次构建 ——
+// 这保证了两者永远一致（单一真源原则）。
+func (m *Manager) applyIndex(idx *index.IndexData, derived *index.Derived) {
+	m.index = idx
+	m.derived = derived
+
+	m.GlobalDepMap = derived.GlobalDepMap
+
+	m.ZipmodDB = make(map[string]string, len(derived.GuidToZipmod))
+	for guid, path := range derived.GuidToZipmod {
+		m.ZipmodDB[guid] = path
+	}
+
+	m.FileDeps = make(map[string][]string, len(idx.Cards))
+	for path, card := range idx.Cards {
+		if len(card.GUIDs) > 0 {
+			m.FileDeps[path] = card.GUIDs
+		}
+	}
+
+	m.ModDeps = make(map[string][]string, len(idx.Zipmods))
+	for path, z := range idx.Zipmods {
+		if len(z.Deps) > 0 {
+			m.ModDeps[path] = z.Deps
+		}
+	}
+
+	m.PluginDepMap = idx.PluginDepMap
+	m.Scanned = true
 }
 
 // collectFiles 递归收集目录下所有满足过滤条件的文件。
@@ -570,23 +615,13 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 		if _, statErr := os.Stat(modPath); statErr != nil {
 			continue
 		}
-		remaining := m.remainingReferrers(guid, selectedSet)
-		if len(remaining) > 0 {
+		// 三道防线统一判定（卡片依赖 / 插件依赖 / mod 间依赖）
+		// §8.6：这是 zipmod 隔离的唯一判定入口
+		if ok, reason := m.checkZipmodMovable(guid, selectedSet); !ok {
 			res.KeptMods++
 			res.Logs = append(res.Logs, OperationLog{
 				"warn",
-				fmt.Sprintf("[保留 MOD] %s (GUID %s) 仍被 %d 个未勾选文件引用，例如: %s",
-					filepath.Base(modPath), guid, len(remaining), firstN(remaining, 3)),
-			})
-			continue
-		}
-		// 该 GUID 是否被其它 zipmod 依赖
-		if dependents := m.modDependents(guid); len(dependents) > 0 {
-			res.KeptMods++
-			res.Logs = append(res.Logs, OperationLog{
-				"warn",
-				fmt.Sprintf("[保留 MOD] %s (GUID %s) 仍被其它 zipmod 依赖: %s",
-					filepath.Base(modPath), guid, firstN(dependents, 3)),
+				fmt.Sprintf("[保留 MOD] %s: %s", filepath.Base(modPath), reason),
 			})
 			continue
 		}

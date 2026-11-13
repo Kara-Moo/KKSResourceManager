@@ -191,13 +191,14 @@ func (m *Manager) Paste(targetDir, targetSide, targetMode string) ClipboardResul
 				})
 				break
 			}
-			if blockers := m.zipmodStillReferenced(guid, abs); len(blockers) > 0 {
+			// 三道防线统一判定（卡片依赖 / 插件依赖 / mod 间依赖）
+			// §8.6：所有移动 zipmod 的路径必须走同一个判定入口
+			if ok, reason := m.checkZipmodMovable(guid, nil); !ok {
 				item := planItem{src: abs, dst: dst, isZipmod: true, guid: guid}
 				modBlocked = &item
 				res.Logs = append(res.Logs, OperationLog{
 					"warn",
-					fmt.Sprintf("无法隔离：%s (GUID %s) 仍被 %d 个资源引用，例如: %s",
-						filepath.Base(abs), guid, len(blockers), firstN(blockers, 3)),
+					fmt.Sprintf("无法隔离：%s: %s", filepath.Base(abs), reason),
 				})
 				break
 			}

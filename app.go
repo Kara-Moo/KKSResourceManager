@@ -32,11 +32,53 @@ type App struct {
 	scanTotal int
 	scanDone  int
 	scanPhase string
+
+	// logs 后端日志环形缓冲（前端订阅增量，不自己拼字符串）
+	logs *logRing
 }
 
 // NewApp 创建 App 实例。
 func NewApp() *App {
-	return &App{}
+	return &App{
+		logs: newLogRing(5000),
+	}
+}
+
+// emitLog 写一条日志到环形缓冲，并广播给前端。
+func (a *App) emitLog(level, scope, msg string) {
+	if a.logs == nil {
+		return
+	}
+	entry := a.logs.Append(level, scope, msg)
+	if a.ctx != nil {
+		wruntime.EventsEmit(a.ctx, "log:append", entry)
+	}
+}
+
+// GetLogs 返回指定序号之后的日志条目。
+//
+// sinceSeq 为 0 时返回全部。level 为空时返回所有级别。
+func (a *App) GetLogs(sinceSeq int64, level string) string {
+	if a.logs == nil {
+		return ok(map[string]interface{}{"seq": int64(0), "entries": []LogEntry{}}, "")
+	}
+	entries := a.logs.Since(sinceSeq)
+	if level != "" && level != "all" {
+		filtered := make([]LogEntry, 0, len(entries))
+		for _, e := range entries {
+			if e.Level == level {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
+	}
+	total, errors := a.logs.Stats()
+	return ok(map[string]interface{}{
+		"seq":     a.logs.CurrentSeq(),
+		"entries": entries,
+		"total":   total,
+		"errors":  errors,
+	}, "")
 }
 
 // startup 在 Wails 启动时调用。
@@ -165,6 +207,14 @@ func (a *App) startScan(manager *Manager) {
 		}
 		a.setScanMsg(msg, result.ScanDurationMS, result.ResourceCount, true)
 		a.emitScanDone(result)
+
+		// §13.1 要求的增量扫描证据日志：
+		// 「复用 N，解析 M」是「没有重复扫盘」的直接证据。
+		a.emitLog("info", "index", fmt.Sprintf("增量扫描：复用 %d，解析 %d，移除 %d，耗时 %dms。",
+			result.Reused, result.Parsed, result.Removed, result.ScanDurationMS))
+		if result.ScanWarning != "" {
+			a.emitLog("warn", "index", "索引保存失败（不影响本次使用）："+result.ScanWarning)
+		}
 	}()
 }
 
@@ -712,6 +762,10 @@ func (a *App) ExecuteIsolate(cardPaths []string, mode string) string {
 	}
 
 	result := manager.Isolate(cardPaths)
+	// 把操作日志写入后端环形缓冲，前端可随时回看
+	for _, entry := range result.Logs {
+		a.emitLog(entry.Level, "isolate", entry.Message)
+	}
 	return ok(result, fmt.Sprintf("隔离完成：%d 个资源，%d 个 MOD", result.MovedCards, result.MovedMods))
 }
 
@@ -729,6 +783,9 @@ func (a *App) ExecuteRestore(cardPaths []string, mode string) string {
 	}
 
 	result := manager.Restore(cardPaths)
+	for _, entry := range result.Logs {
+		a.emitLog(entry.Level, "isolate", entry.Message)
+	}
 	return ok(result, fmt.Sprintf("恢复完成：%d 个资源，%d 个 MOD", result.RestoredCard, result.RestoredMod))
 }
 
@@ -800,6 +857,9 @@ func (a *App) PasteClipboard(targetDir string, targetSide string, targetMode str
 	}
 
 	result := manager.Paste(targetDir, targetSide, targetMode)
+	for _, entry := range result.Logs {
+		a.emitLog(entry.Level, "paste", entry.Message)
+	}
 	return ok(result, fmt.Sprintf("粘贴完成：处理 %d 个条目。", result.Affected))
 }
 
@@ -821,6 +881,9 @@ func (a *App) HideFolders(paths []string, side string) string {
 	}
 
 	result := manager.invisible.HideFolders(paths, side)
+	for _, entry := range result.Logs {
+		a.emitLog(entry.Level, "hide", entry.Message)
+	}
 	return ok(result, fmt.Sprintf("隐藏完成：%d 个文件夹。", result.Hidden))
 }
 
