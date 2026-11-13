@@ -17,6 +17,8 @@ import (
 	"sync"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"kksresourcemanager/internal/preview"
 )
 
 // App 是 Wails 应用主体。
@@ -83,6 +85,18 @@ func (a *App) GetLogs(sinceSeq int64, level string) string {
 
 // startup 在 Wails 启动时调用。
 func (a *App) startup(ctx context.Context) {
+	a.ctx = ctx
+
+	// 启动缩略图队列（红线 N1：解码只在后台 worker 发生）
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+	if manager != nil {
+		if err := manager.StartThumbQueue(a.notifyThumbsReady); err != nil {
+			a.emitLog("warn", "preview", "缩略图队列启动失败："+err.Error())
+		}
+	}
+
 	a.ctx = ctx
 }
 
@@ -970,7 +984,98 @@ func (a *App) GetInvisibleTreeData() string {
 }
 
 // ---------------------------------------------------------------------------
-// 6. 辅助接口
+// 6. 右栏面板（v2.1 §3.3）
+// ---------------------------------------------------------------------------
+
+// GetRightPanel 返回右栏面板数据。
+//
+// 一次请求出全部（红线 N6）：两个区域、缩略图缓存命中情况、占用统计。
+// 全程不做 PNG 解码（红线 N1）。
+func (a *App) GetRightPanel(side, mode, rel, focusAbs string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	panel, err := manager.BuildPanel(side, mode, rel, focusAbs)
+	if err != nil {
+		return fail(err.Error())
+	}
+	return ok(panel, "")
+}
+
+// GetThumbBatch 批量查询缩略图。
+//
+// 只查缓存，未命中返回 pending=true（由后台队列生成后经 thumb:ready 事件推送）。
+func (a *App) GetThumbBatch(paths []string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	results := make([]preview.Result, 0, len(paths))
+	for _, p := range paths {
+		key, uri, pending := manager.RequestThumb(p)
+		results = append(results, preview.Result{
+			ThumbKey: key,
+			DataURI:  uri,
+			Pending:  pending,
+		})
+	}
+	return ok(results, "")
+}
+
+// notifyThumbsReady 批量推送已生成的缩略图。
+func (a *App) notifyThumbsReady(results []preview.Result) {
+	if a.ctx == nil || len(results) == 0 {
+		return
+	}
+	wruntime.EventsEmit(a.ctx, "thumb:ready", results)
+}
+
+// ZipmodDetail zipmod 的占用详情。
+type ZipmodDetail struct {
+	GUID       string         `json:"guid"`
+	Path       string         `json:"path"`
+	Base       string         `json:"base"`
+	Size       int64          `json:"size"`
+	Cards      []string       `json:"cards"`
+	Plugins    []PluginDetail `json:"plugins"`
+	RefCards   int            `json:"refCards"`
+	RefPlugins int            `json:"refPlugins"`
+	ParseErr   string         `json:"parseErr"`
+}
+
+// PluginDetail 一个 DLL 的命中详情。
+type PluginDetail struct {
+	Name    string   `json:"name"`
+	Rel     string   `json:"rel"`
+	Abs     string   `json:"abs"`
+	HitMode string   `json:"hitMode"`
+	GUIDs   []string `json:"guids"`
+}
+
+// GetZipmodDetail 返回 zipmod 的完整占用详情。
+//
+// 这是排查「为什么这个 mod 隔离不了」的关键信息。
+func (a *App) GetZipmodDetail(guid string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	detail := manager.ZipmodDetailOf(guid)
+	return ok(detail, "")
+}
+
+// ---------------------------------------------------------------------------
+// 7. 辅助接口
 // ---------------------------------------------------------------------------
 
 // GetKKSInfo 返回当前 KKS 根目录与隔离区路径，以及各资源类型的目录映射。

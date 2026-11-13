@@ -112,6 +112,49 @@ func (m *Manager) BuildPreview(path string) (PreviewData, error) {
 	}, nil
 }
 
+// buildThumbJPEG 生成缩略图的 JPEG 原始字节。
+//
+// 与 BuildPreview 共用解码/缩放逻辑，只是输出形式不同：
+//   - BuildPreview 返回 data URI（前端直接用）
+//   - buildThumbJPEG 返回原始字节（磁盘缓存 / 队列用）
+func (m *Manager) buildThumbJPEG(path string) ([]byte, error) {
+	abs, err := filepath.Abs(strings.TrimSpace(path))
+	if err != nil {
+		return nil, err
+	}
+	if !m.pathAllowed(abs) {
+		return nil, fmt.Errorf("该路径不在允许的范围内")
+	}
+
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() || info.Size() == 0 {
+		return nil, fmt.Errorf("不是可预览的文件")
+	}
+	if info.Size() > previewMaxFileSize {
+		return nil, fmt.Errorf("文件过大（%.1f MB）", float64(info.Size())/(1024*1024))
+	}
+
+	img, _, _, err := decodeCardImage(abs)
+	if err != nil {
+		return nil, err
+	}
+	if img == nil {
+		return nil, fmt.Errorf("无法解析图片内容")
+	}
+
+	flattened := flattenOnWhite(img)
+	scaled := scaleToFit(flattened, previewMaxWidth, previewMaxHeight)
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, scaled, &jpeg.Options{Quality: previewJPEGQuality}); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // pathAllowed 判断路径是否位于受管范围内。
 func (m *Manager) pathAllowed(abs string) bool {
 	return isUnder(abs, m.KksRoot) || isUnder(abs, m.DelCardsRoot)

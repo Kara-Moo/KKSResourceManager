@@ -21,8 +21,10 @@ import (
 	"sync"
 	"time"
 
+	"kksresourcemanager/internal/core"
 	"kksresourcemanager/internal/index"
 	"kksresourcemanager/internal/plugin"
+	"kksresourcemanager/internal/preview"
 )
 
 // ---------------------------------------------------------------------------
@@ -120,6 +122,20 @@ type Manager struct {
 	// PluginDepMap GUID -> 硬编码引用它的 DLL 相对路径（第二道防线的依据）
 	PluginDepMap map[string][]string
 
+	// guidOfPath zipmod 绝对路径 -> GUID（反向表，derive 时建好）
+	// 用于 O(1) 查出「这个 zipmod 被多少文件占用」。
+	guidOfPath map[string]string
+
+	// thumbs 缩略图生成队列（两级缓存 + 有界并发）
+	thumbs *preview.Queue
+	// snapshots 目录快照缓存（LRU 128）
+	snapshots *core.SnapshotCache
+	// covers 封面卡缓存（LRU 512）
+	covers *core.CoverCache
+	// fileCounts / dirSizes 统计缓存
+	fileCounts *countCache
+	dirSizes   *sizeCache
+
 	// clipboard 复制/剪切/粘贴剪贴板
 	clipboard *Clipboard
 	// invisible 空文件夹隐藏状态索引
@@ -154,7 +170,12 @@ func NewManager(kksRoot string) (*Manager, error) {
 		DelFileDeps:  make(map[string][]string),
 		ModDeps:      make(map[string][]string),
 		PluginDepMap: make(map[string][]string),
+		guidOfPath:   make(map[string]string),
 		clipboard:    &Clipboard{},
+		snapshots:    core.NewSnapshotCache(128),
+		covers:       core.NewCoverCache(512),
+		fileCounts:   newCountCache(),
+		dirSizes:     newSizeCache(),
 	}
 	if err := m.EnsureDelDirs(); err != nil {
 		return nil, err
@@ -403,6 +424,16 @@ func (m *Manager) applyIndex(idx *index.IndexData, derived *index.Derived) {
 	}
 
 	m.PluginDepMap = idx.PluginDepMap
+
+	// guidOfPath 反向表：zipmod 绝对路径 -> GUID
+	// 用于 O(1) 查出「这个 zipmod 被多少文件占用」（红线 N2）。
+	m.guidOfPath = make(map[string]string, len(idx.Zipmods))
+	for path, z := range idx.Zipmods {
+		if z.GUID != "" {
+			m.guidOfPath[path] = z.GUID
+		}
+	}
+
 	m.Scanned = true
 }
 
