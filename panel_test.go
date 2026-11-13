@@ -202,6 +202,11 @@ func TestPanelMoreTile(t *testing.T) {
 }
 
 // TestPanelFocusSelected 焦点是卡片时，该卡格应标记 Selected。
+// TestPanelFocusSelected 焦点卡片在单图布局里被标记为 Selected。
+//
+// 注意：v2.2 FIX-02 改变了契约 —— 卡片焦点不再返回九宫格，
+// 而是单图布局（Sections 长度 1、Layout=single）。
+// 本测试原先断言「九宫格里有一个 Selected 格」，那是旧行为。
 func TestPanelFocusSelected(t *testing.T) {
 	env := newTestEnv(t)
 	m := env.manager
@@ -214,18 +219,23 @@ func TestPanelFocusSelected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("构建面板失败: %v", err)
 	}
-	secB := panel.Sections[1]
-	selected := 0
-	for _, tile := range secB.Tiles {
-		if tile.Selected {
-			selected++
-			if filepath.Base(tile.Abs) != "target.png" {
-				t.Errorf("Selected 标记应落在焦点卡片上，实际 %s", tile.Abs)
-			}
-		}
+
+	if len(panel.Sections) != 1 {
+		t.Fatalf("卡片焦点应只有 1 个区域，实际 %d", len(panel.Sections))
 	}
-	if selected != 1 {
-		t.Errorf("应有且仅有 1 个 Selected 格，实际 %d", selected)
+	sec := panel.Sections[0]
+	if sec.Layout != "single" {
+		t.Errorf("布局应为 single，实际 %q", sec.Layout)
+	}
+	if len(sec.Tiles) != 1 {
+		t.Fatalf("应只有 1 个格子，实际 %d", len(sec.Tiles))
+	}
+	tile := sec.Tiles[0]
+	if !tile.Selected {
+		t.Error("焦点卡片应标记为 Selected")
+	}
+	if filepath.Base(tile.Abs) != "target.png" {
+		t.Errorf("Selected 格应指向焦点卡片，实际 %s", tile.Abs)
 	}
 }
 
