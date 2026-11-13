@@ -38,6 +38,11 @@ type Tile struct {
 	ThumbKey string `json:"thumbKey"`
 	// Thumb dataURI，未命中为空
 	Thumb string `json:"thumb"`
+	// ThumbPreview 占位用小图 dataURI（仅 single 布局使用）。
+	//
+	// 大图 720×960 生成较慢（约 60-120ms），先用 320 档顶上，
+	// 避免用户看到一片空白。
+	ThumbPreview string `json:"thumbPreview"`
 	// Pending 缩略图未就绪
 	Pending bool `json:"pending"`
 	// Selected 焦点所在格
@@ -66,6 +71,11 @@ type Section struct {
 	Visible bool `json:"visible"`
 	// Empty 非空且 Visible=true 时显示的空态文案
 	Empty string `json:"empty"`
+	// Lazy true 表示前端按可视区懒加载缩略图（zipmod 全量列表用）。
+	//
+	// 为什么需要：500 张引用若都预请求，等于 500 次 os.Stat + 500 个队列任务，
+	// 切换焦点会瞬间打满队列，把真正需要的图挤到后面。
+	Lazy bool `json:"lazy"`
 }
 
 // Panel 右栏完整数据。
@@ -143,6 +153,14 @@ func (m *Manager) BuildPanel(side, mode, rel, focusAbs string) (Panel, error) {
 	// --- zipmod 分支 ---
 	if mode == ModeZipmod {
 		return m.buildZipmodPanel(&panel, focusAbsNorm, focusKind), nil
+	}
+
+	// --- 卡片分支：单张大图（v2.2 FIX-02）---
+	//
+	// 必须在这里分流：九宫格是「文件夹视角」的语义，
+	// 对单张卡是错误的 —— 用户点一张卡，想看的就是这一张。
+	if focusKind == "file" && mode != ModeZipmod && mode != "invisible" && focusAbsNorm != "" {
+		return m.buildCardPanel(&panel, focusAbsNorm), nil
 	}
 
 	// --- invisible 模式：无目录概念 ---
@@ -261,6 +279,91 @@ func (m *Manager) BuildPanel(side, mode, rel, focusAbs string) (Panel, error) {
 	panel.Focus.Info = m.panelFocusInfo(mode, dir, focusAbsNorm, focusKind)
 	panel.Gen = m.panelGen()
 	return panel, nil
+}
+
+// buildCardPanel 单卡片焦点：一张大图 + 信息（v2.2 FIX-02）。
+//
+// 不返回九宫格 —— 九宫格是「文件夹视角」，
+// 用户点一张卡想看的就是这一张，铺一屏同类卡片没有意义。
+func (m *Manager) buildCardPanel(panel *Panel, cardAbs string) Panel {
+	sec := Section{
+		ID:      "preview",
+		Title:   "",
+		Layout:  "single",
+		Visible: true,
+		Total:   1,
+	}
+
+	t := Tile{
+		Kind:     "card",
+		Name:     filepath.Base(cardAbs),
+		Abs:      cardAbs,
+		Rel:      m.relOf(cardAbs),
+		Selected: true,
+	}
+	t.ThumbKey, t.Thumb, t.Pending = m.requestLargeThumb(cardAbs)
+	// 大图未就绪时先用九宫格档顶上（同一队列，不同 key，不会互相覆盖）
+	if t.Pending {
+		_, small, smallPending := m.thumbRequest(cardAbs, true)
+		if !smallPending {
+			t.ThumbPreview = small
+		}
+	}
+
+	sec.Tiles = []Tile{t}
+	panel.Sections = []Section{sec}
+	panel.Focus.Kind = "card"
+	panel.Focus.Name = filepath.Base(cardAbs)
+	panel.Focus.Abs = cardAbs
+	panel.Focus.Info = m.cardInfoLine(cardAbs)
+	panel.Gen = m.panelGen()
+	return *panel
+}
+
+// cardInfoLine 卡片信息栏文案：大小 + 依赖数。
+//
+// 不再回填文件名 —— 标题已经是文件名，重复两行是 FIX-08。
+func (m *Manager) cardInfoLine(abs string) string {
+	var size int64
+	if info, err := os.Stat(abs); err == nil {
+		size = info.Size()
+	}
+
+	// 依赖数直接查内存索引，不做磁盘访问
+	deps := 0
+	if m.index != nil {
+		if c, ok := m.index.Cards[abs]; ok {
+			deps = len(c.GUIDs)
+		}
+	}
+	if deps == 0 {
+		if g, ok := m.FileDeps[abs]; ok {
+			deps = len(g)
+		}
+	}
+
+	sizeText := core.ParseSize(size)
+	if size == 0 {
+		sizeText = "0 B"
+	}
+	if deps == 0 {
+		return sizeText + " · 无依赖"
+	}
+	return sizeText + " · 依赖 " + strconv.Itoa(deps) + " 个 zipmod"
+}
+
+// requestLargeThumb 请求单卡大图（720×960 档）。
+//
+// 与九宫格走同一个队列，但键带 "-l" 后缀、磁盘文件独立，
+// 两档互不覆盖。
+func (m *Manager) requestLargeThumb(abs string) (key string, dataURI string, pending bool) {
+	fp := m.fingerprintOf(abs)
+	key = preview.ThumbKeySized(abs, fp, preview.SizeLarge)
+	if m.thumbs == nil {
+		return key, "", true
+	}
+	uri, pend := m.thumbs.RequestSized(abs, fp, preview.SizeLarge, true)
+	return key, uri, pend
 }
 
 // buildZipmodPanel 构建 zipmod 焦点的面板（规格 §4）。

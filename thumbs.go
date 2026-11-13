@@ -51,8 +51,17 @@ func (m *Manager) StartThumbQueue(notify preview.NotifyFunc, onErr func(path str
 //
 // 复用 preview.go 的解码/缩放逻辑，但输出 JPEG 字节而非 data URI
 // （磁盘缓存存原始字节，命中时只需 base64 编码）。
-func (m *Manager) generateThumb(abs string, fp preview.Fingerprint) (string, error) {
-	data, err := m.buildThumbJPEG(abs)
+func (m *Manager) generateThumb(abs string, fp preview.Fingerprint, class preview.SizeClass) (string, error) {
+	var (
+		data []byte
+		err  error
+	)
+	switch class {
+	case preview.SizeLarge:
+		data, err = m.buildThumbJPEGSized(abs, previewLargeWidth, previewLargeHeight, previewLargeQuality)
+	default:
+		data, err = m.buildThumbJPEG(abs)
+	}
 	if err != nil {
 		return "", err
 	}

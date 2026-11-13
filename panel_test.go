@@ -5,8 +5,10 @@ package main
 // 覆盖：tileCount 边界、区域 Visible 规则、排序、封面、占用数、零引用空态。
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"kksresourcemanager/internal/index"
@@ -492,5 +494,95 @@ func TestZipmodDetailOf(t *testing.T) {
 	}
 	if len(d.Plugins) != 1 || d.Plugins[0].Name != "Foo.dll" {
 		t.Errorf("plugins 列表应含 Foo.dll，实际 %v", d.Plugins)
+	}
+}
+
+// TestPanelCardFocusSingle 卡片焦点必须出单张大图，而不是九宫格（FIX-02）。
+func TestPanelCardFocusSingle(t *testing.T) {
+	env := newTestEnv(t)
+	m := env.manager
+
+	card := env.femaleCard("c.png")
+	if err := os.MkdirAll(filepath.Dir(card), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(card, tinyPNG, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	panel, err := m.BuildPanel("left", "female_card", "", card)
+	if err != nil {
+		t.Fatalf("BuildPanel 失败: %v", err)
+	}
+
+	if panel.Focus.Kind != "card" {
+		t.Errorf("焦点类型应为 card，实际 %q", panel.Focus.Kind)
+	}
+	if len(panel.Sections) != 1 {
+		t.Fatalf("卡片焦点应只有 1 个区域，实际 %d", len(panel.Sections))
+	}
+	if panel.Sections[0].Layout != "single" {
+		t.Errorf("布局应为 single，实际 %q", panel.Sections[0].Layout)
+	}
+	if len(panel.Sections[0].Tiles) != 1 {
+		t.Errorf("应只有 1 个格子，实际 %d", len(panel.Sections[0].Tiles))
+	}
+	if panel.Sections[0].More != 0 {
+		t.Errorf("单卡不应出现「还有」格，实际 more=%d", panel.Sections[0].More)
+	}
+}
+
+// TestPanelCardInfoNotDuplicate 信息栏不得重复文件名（FIX-08）。
+func TestPanelCardInfoNotDuplicate(t *testing.T) {
+	env := newTestEnv(t)
+	m := env.manager
+
+	card := env.femaleCard("87642255_p18.png")
+	if err := os.MkdirAll(filepath.Dir(card), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(card, tinyPNG, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	panel, err := m.BuildPanel("left", "female_card", "", card)
+	if err != nil {
+		t.Fatalf("BuildPanel 失败: %v", err)
+	}
+
+	if panel.Focus.Info == panel.Focus.Name {
+		t.Errorf("信息栏与标题重复：%q", panel.Focus.Info)
+	}
+	if strings.Contains(panel.Focus.Info, "87642255_p18.png") {
+		t.Errorf("信息栏不应包含文件名，实际 %q", panel.Focus.Info)
+	}
+	if !strings.Contains(panel.Focus.Info, "依赖") {
+		t.Errorf("信息栏应含依赖数，实际 %q", panel.Focus.Info)
+	}
+}
+
+// TestPanelFolderFocusStillGrid 文件夹焦点仍是九宫格（不得被 FIX-02 误伤）。
+func TestPanelFolderFocusStillGrid(t *testing.T) {
+	env := newTestEnv(t)
+	m := env.manager
+
+	for i := 0; i < 3; i++ {
+		writeFile(t, env.femaleCard(fmt.Sprintf("f%d.png", i)), "x")
+	}
+
+	panel, err := m.BuildPanel("left", "female_card", "", m.SourceDir(ResourceKinds[0]))
+	if err != nil {
+		t.Fatalf("BuildPanel 失败: %v", err)
+	}
+	if panel.Focus.Kind != "folder" {
+		t.Errorf("焦点类型应为 folder，实际 %q", panel.Focus.Kind)
+	}
+	for _, sec := range panel.Sections {
+		if sec.Layout == "single" {
+			t.Error("文件夹焦点不应使用 single 布局")
+		}
+	}
+	if len(panel.Sections) != 2 {
+		t.Errorf("文件夹焦点应有 A/B 两区，实际 %d", len(panel.Sections))
 	}
 }

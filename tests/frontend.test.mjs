@@ -614,6 +614,64 @@ console.log('\n【18】FIX-05：全局异常兜底');
   }
 }
 
+
+console.log('\n【19】FIX-02：卡片焦点单张大图');
+{
+  await page.evaluate(() => {
+    window.__panelData = {
+      focus: { kind: 'card', name: '87642255_p18.png', abs: 'C:/KK/female/22.7.15/87642255_p18.png', info: '5.7 MB · 依赖 6 个 zipmod' },
+      sections: [
+        { id: 'preview', title: '', layout: 'single', total: 1, tiles: [
+          { kind: 'card', name: '87642255_p18.png', rel: '22.7.15/87642255_p18.png', abs: 'C:/KK/female/22.7.15/87642255_p18.png', badge: '', thumbKey: 'bigkey-l', thumb: '', thumbPreview: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==', pending: true, selected: true }
+        ], more: 0, moreLabel: '', visible: true, empty: '', lazy: false },
+      ],
+      gen: 10,
+    };
+  });
+  await page.evaluate(async () => { await refreshPanel(); });
+  await page.waitForTimeout(400);
+
+  const single = await page.locator('#panel-sections .panel-single').count();
+  check('渲染单卡大图容器', single === 1, `实际 ${single} 个`);
+
+  const grids = await page.locator('#panel-sections .panel-grid').count();
+  check('不渲染九宫格', grids === 0, `实际 ${grids} 个`);
+
+  const cells = await page.locator('#panel-sections .panel-cell').count();
+  check('不渲染网格格子', cells === 0, `实际 ${cells} 个`);
+
+  const moreCells = await page.locator('#panel-sections .panel-cell.is-more').count();
+  check('无「还有 N 张」格', moreCells === 0, `实际 ${moreCells} 个`);
+
+  const imgs = await page.locator('#panel-sections .panel-single img').count();
+  check('大图未就绪时用占位图顶上（不空白）', imgs === 1, `实际 ${imgs} 个`);
+
+  const nameText = await page.locator('#panel-sections .single-name').innerText();
+  check('大图下方显示文件名', nameText.includes('87642255_p18.png'), `实际 "${nameText}"`);
+
+  const infoText = await page.locator('#panel-sections .single-info').innerText();
+  check('信息行显示大小与依赖', infoText.includes('MB') && infoText.includes('依赖'), `实际 "${infoText}"`);
+
+  // 收到大图后应原地替换
+  await page.evaluate(() => {
+    const h = window.__thumbHandler;
+    if (h) h([{ thumbKey: 'bigkey-l', dataUri: 'data:image/jpeg;base64,BIGIMAGE' }]);
+  });
+  await page.waitForTimeout(250);
+  const src = await page.evaluate(() => {
+    const img = document.querySelector('#panel-sections .panel-single img');
+    return img ? img.getAttribute('src') : '';
+  });
+  check('收到大图后原地替换', src.includes('BIGIMAGE'), `实际 "${src.slice(0, 40)}"`);
+
+  const aspect = await page.evaluate(() => {
+    const f = document.querySelector('.panel-single .single-frame');
+    if (!f) return '';
+    return getComputedStyle(f.querySelector('img')).objectFit;
+  });
+  check('大图使用 contain（不裁切卡片）', aspect === 'contain', `实际 "${aspect}"`);
+}
+
 await page.screenshot({ path: path.join(__dirname, '..', 'build', 'frontend-test.png'), fullPage: false });
 await browser.close();
 

@@ -118,6 +118,24 @@ func (m *Manager) BuildPreview(path string) (PreviewData, error) {
 //   - BuildPreview 返回 data URI（前端直接用）
 //   - buildThumbJPEG 返回原始字节（磁盘缓存 / 队列用）
 func (m *Manager) buildThumbJPEG(path string) ([]byte, error) {
+	return m.buildThumbJPEGSized(path, previewMaxWidth, previewMaxHeight, previewJPEGQuality)
+}
+
+// 大图档尺寸（v2.2 FIX-02）。
+//
+// 九宫格 320×400 在 376px 宽的面板上拉伸会发虚，
+// 单卡预览需要 2x 余量，所以单独一档 720×960。
+const (
+	// previewLargeWidth 单卡大图最大宽度
+	previewLargeWidth = 720
+	// previewLargeHeight 单卡大图最大高度
+	previewLargeHeight = 960
+	// previewLargeQuality 大图 JPEG 质量（略高于九宫格）
+	previewLargeQuality = 85
+)
+
+// buildThumbJPEGSized 按指定尺寸档生成缩略图的 JPEG 字节。
+func (m *Manager) buildThumbJPEGSized(path string, maxW, maxH, quality int) ([]byte, error) {
 	abs, err := filepath.Abs(strings.TrimSpace(path))
 	if err != nil {
 		return nil, err
@@ -146,10 +164,10 @@ func (m *Manager) buildThumbJPEG(path string) ([]byte, error) {
 	}
 
 	flattened := flattenOnWhite(img)
-	scaled := scaleToFit(flattened, previewMaxWidth, previewMaxHeight)
+	scaled := scaleToFit(flattened, maxW, maxH)
 
 	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, scaled, &jpeg.Options{Quality: previewJPEGQuality}); err != nil {
+	if err := jpeg.Encode(&buf, scaled, &jpeg.Options{Quality: quality}); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil

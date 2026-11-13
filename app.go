@@ -1084,6 +1084,26 @@ func (a *App) GetRightPanel(side, mode, rel, focusAbs string) string {
 	return ok(panel, "")
 }
 
+// GetBigPreview 单卡大图（720×960）。
+//
+// 只查缓存；未命中返回 pending 并把任务入队，
+// 生成完成后经 thumb:ready（key 带 -l 后缀）推给前端。
+func (a *App) GetBigPreview(path string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	key, uri, pending := manager.requestLargeThumb(path)
+	return ok(map[string]interface{}{
+		"thumbKey": key,
+		"dataUri":  uri,
+		"pending":  pending,
+	}, "")
+}
+
 // GetThumbBatch 批量查询缩略图。
 //
 // 只查缓存，未命中返回 pending=true（由后台队列生成后经 thumb:ready 事件推送）。

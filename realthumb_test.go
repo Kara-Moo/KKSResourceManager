@@ -9,6 +9,9 @@ package main
 //   KKS_REAL_ROOT="E:\KKV114" go test -run TestRealThumb -v -timeout 10m
 
 import (
+	"bytes"
+	"image"
+	_ "image/jpeg"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,5 +190,91 @@ func TestRealThumbQueue(t *testing.T) {
 		if avg > 200 {
 			t.Errorf("缩略图平均 %.0f KB，超过预期（应 ≤200KB）", avg)
 		}
+	}
+}
+
+// TestRealBigPreviewDimensions 大图档必须真的比九宫格档大（FIX-02 清晰度验证）。
+func TestRealBigPreviewDimensions(t *testing.T) {
+	root := strings.TrimSpace(os.Getenv("KKS_REAL_ROOT"))
+	if root == "" {
+		t.Skip("未设置 KKS_REAL_ROOT，跳过")
+	}
+	m, err := NewManager(root)
+	if err != nil {
+		t.Fatalf("创建 Manager 失败: %v", err)
+	}
+
+	// 找一张**原图大于九宫格档**的真实卡片。
+	//
+	// 注意：scaleToFit 不做放大 —— 小图放大只会更糊，
+	// 所以小图的大图档与九宫格档尺寸相同是正确的。要验证两档差异，
+	// 必须挑一张原图宽 > 九宫格宽 的卡。
+	femaleDir := filepath.Join(m.KksRoot, "UserData", "chara", "female")
+	var card string
+	scanned := 0
+	filepath.Walk(femaleDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || card != "" || info == nil || info.IsDir() {
+			return nil
+		}
+		if !strings.EqualFold(filepath.Ext(path), ".png") {
+			return nil
+		}
+		scanned++
+		if scanned > 200 {
+			return filepath.SkipAll
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+		cfg, _, err := image.DecodeConfig(f)
+		if err != nil {
+			return nil
+		}
+		if cfg.Width > previewMaxWidth {
+			card = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if card == "" {
+		t.Skip("未找到原图宽于九宫格档的卡片")
+	}
+	t.Logf("样本：%s", filepath.Base(card))
+
+	grid, err := m.buildThumbJPEGSized(card, previewMaxWidth, previewMaxHeight, previewJPEGQuality)
+	if err != nil {
+		t.Fatalf("九宫格档生成失败: %v", err)
+	}
+	large, err := m.buildThumbJPEGSized(card, previewLargeWidth, previewLargeHeight, previewLargeQuality)
+	if err != nil {
+		t.Fatalf("大图档生成失败: %v", err)
+	}
+
+	gc, _, err := image.DecodeConfig(bytes.NewReader(grid))
+	if err != nil {
+		t.Fatalf("解码九宫格失败: %v", err)
+	}
+	lc, _, err := image.DecodeConfig(bytes.NewReader(large))
+	if err != nil {
+		t.Fatalf("解码大图失败: %v", err)
+	}
+
+	t.Logf("九宫格档 %dx%d %.0fKB；大图档 %dx%d %.0fKB",
+		gc.Width, gc.Height, float64(len(grid))/1024,
+		lc.Width, lc.Height, float64(len(large))/1024)
+
+	if gc.Width > previewMaxWidth || gc.Height > previewMaxHeight {
+		t.Errorf("九宫格超尺寸: %dx%d", gc.Width, gc.Height)
+	}
+	if lc.Width > previewLargeWidth || lc.Height > previewLargeHeight {
+		t.Errorf("大图超尺寸: %dx%d", lc.Width, lc.Height)
+	}
+	if lc.Width <= gc.Width {
+		t.Errorf("大图宽度应大于九宫格（否则面板拉伸会发虚）：%d vs %d", lc.Width, gc.Width)
+	}
+	if len(large) <= len(grid) {
+		t.Errorf("大图字节数应明显更大：%d vs %d", len(large), len(grid))
 	}
 }

@@ -32,27 +32,56 @@ type Fingerprint struct {
 	ModTime int64
 }
 
-// ThumbKey 返回缩略图缓存键。
+// SizeClass 缩略图尺寸档。
+//
+// 两档必须彼此独立（键不同、磁盘文件不同）：
+// 九宫格 320×400 撑到 376px 宽会发虚，单卡预览需要 720×960；
+// 若共用一档，要么九宫格浪费解码，要么大图糊。
+type SizeClass string
+
+const (
+	// SizeGrid 九宫格档：320×400
+	SizeGrid SizeClass = "g"
+	// SizeLarge 单卡大图档：720×960
+	SizeLarge SizeClass = "l"
+)
+
+// ThumbKey 返回九宫格档的缓存键。
 //
 // key = sha1(abs + "|" + size + "|" + mtime)
 //
 // 包含 size 与 mtime 的意义：文件内容变了 key 就变，旧缓存自动失效，
 // 无需任何显式清理逻辑。
 func ThumbKey(abs string, fp Fingerprint) string {
+	return ThumbKeySized(abs, fp, SizeGrid)
+}
+
+// ThumbKeySized 返回指定尺寸档的缓存键。
+//
+// large 档在基础键后加 "-l" 后缀 —— 同一文件的两种尺寸互不覆盖。
+func ThumbKeySized(abs string, fp Fingerprint, class SizeClass) string {
 	raw := abs + "|" + strconv.FormatInt(fp.Size, 10) + "|" + strconv.FormatInt(fp.ModTime, 10)
 	sum := sha1.Sum([]byte(raw))
-	return hex.EncodeToString(sum[:])
+	key := hex.EncodeToString(sum[:])
+	if class == SizeLarge {
+		return key + "-l"
+	}
+	return key
 }
 
 // diskPath 返回缩略图在磁盘缓存中的路径。
 //
 // 布局：thumb/<sha1(abs)[:2]>/<sha1(abs+size+mtime)>.jpg
 // 两级目录避免单目录文件过多。
-func diskPath(diskDir, abs string, fp Fingerprint) string {
+func diskPath(diskDir, abs string, fp Fingerprint, class SizeClass) string {
 	absSum := sha1.Sum([]byte(abs))
 	keySum := sha1.Sum([]byte(abs + "|" + strconv.FormatInt(fp.Size, 10) + "|" + strconv.FormatInt(fp.ModTime, 10)))
 	shard := hex.EncodeToString(absSum[:])[:2]
-	return filepath.Join(diskDir, shard, hex.EncodeToString(keySum[:])+".jpg")
+	name := hex.EncodeToString(keySum[:])
+	if class == SizeLarge {
+		name += "-l"
+	}
+	return filepath.Join(diskDir, shard, name+".jpg")
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +224,21 @@ type Result struct {
 type NotifyFunc func(results []Result)
 
 // Generator 缩略图生成函数（由调用方注入实际解码逻辑）。
-type Generator func(abs string, fp Fingerprint) (dataURI string, err error)
+//
+// class 决定输出尺寸：SizeGrid=320×400，SizeLarge=720×960。
+type Generator func(abs string, fp Fingerprint, class SizeClass) (dataURI string, err error)
+
+// job 一个待生成的缩略图任务。
+//
+// 去重与排队以 key 为单位，而不是 abs ——
+// 同一文件的 grid 与 large 是两件不同的工作，必须各自成队，
+// 否则先排入的那档会把另一档吞掉。
+type job struct {
+	abs   string
+	fp    Fingerprint
+	class SizeClass
+	key   string
+}
 
 // Queue 缩略图生成队列。
 type Queue struct {
@@ -209,7 +252,7 @@ type Queue struct {
 	hi       []string
 	lo       []string
 	inflight map[string]bool
-	pending  map[string]Fingerprint
+	jobs     map[string]job
 	closed   bool
 
 	// wake 有新任务时唤醒 worker
@@ -272,7 +315,7 @@ func NewQueue(diskDir string, workers int, gen Generator, notify NotifyFunc) *Qu
 		gen:      gen,
 		notify:   notify,
 		inflight: make(map[string]bool),
-		pending:  make(map[string]Fingerprint),
+		jobs:     make(map[string]job),
 		wake:     make(chan struct{}, 1),
 		done:     make(chan struct{}),
 	}
@@ -290,7 +333,14 @@ func NewQueue(diskDir string, workers int, gen Generator, notify NotifyFunc) *Qu
 //   - 命中磁盘 → 读文件返回，pending=false
 //   - 都未命中 → 入队，返回 ("", true)
 func (q *Queue) Request(abs string, fp Fingerprint, priority bool) (string, bool) {
-	key := ThumbKey(abs, fp)
+	return q.RequestSized(abs, fp, SizeGrid, priority)
+}
+
+// RequestSized 请求指定尺寸档的缩略图。
+//
+// 两档各自走自己的缓存键与磁盘文件，互不影响。
+func (q *Queue) RequestSized(abs string, fp Fingerprint, class SizeClass, priority bool) (string, bool) {
+	key := ThumbKeySized(abs, fp, class)
 
 	// 1. 内存命中
 	if v, ok := q.mem.Get(key); ok {
@@ -301,7 +351,7 @@ func (q *Queue) Request(abs string, fp Fingerprint, priority bool) (string, bool
 	}
 
 	// 2. 磁盘命中（只读文件，不解码）
-	if path := diskPath(q.diskDir, abs, fp); fileExists(path) {
+	if path := diskPath(q.diskDir, abs, fp, class); fileExists(path) {
 		if data, err := os.ReadFile(path); err == nil {
 			uri := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data)
 			q.mem.Put(key, uri)
@@ -313,7 +363,7 @@ func (q *Queue) Request(abs string, fp Fingerprint, priority bool) (string, bool
 	}
 
 	// 3. 未命中 → 入队
-	q.enqueue(abs, fp, key, priority)
+	q.enqueue(abs, fp, class, key, priority)
 	q.statsMu.Lock()
 	q.misses++
 	q.statsMu.Unlock()
@@ -321,46 +371,45 @@ func (q *Queue) Request(abs string, fp Fingerprint, priority bool) (string, bool
 }
 
 // enqueue 把任务加入队列（去重）。
-func (q *Queue) enqueue(abs string, fp Fingerprint, key string, priority bool) {
+func (q *Queue) enqueue(abs string, fp Fingerprint, class SizeClass, key string, priority bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	if q.closed {
 		return
 	}
-	// 已在飞行中 → 不重复入队
+	// 已在飞行中 → 不重复入队（但计入去重数，便于观察）
 	if q.inflight[key] {
 		q.dedupCount++
 		return
 	}
-	// 已在队列中 → 提升优先级
-	for i, p := range q.hi {
-		if p == abs {
+	// 已在队列中 → 需要时提升优先级
+	for i, k := range q.hi {
+		if k == key {
 			if !priority {
 				return
 			}
-			// 从 hi 移到前面
 			q.hi = append(q.hi[:i], q.hi[i+1:]...)
-			q.hi = append([]string{abs}, q.hi...)
+			q.hi = append([]string{key}, q.hi...)
 			return
 		}
 	}
-	for i, p := range q.lo {
-		if p == abs {
+	for i, k := range q.lo {
+		if k == key {
 			if !priority {
 				return
 			}
 			q.lo = append(q.lo[:i], q.lo[i+1:]...)
-			q.hi = append([]string{abs}, q.hi...)
+			q.hi = append([]string{key}, q.hi...)
 			return
 		}
 	}
 
-	q.pending[abs] = fp
+	q.jobs[key] = job{abs: abs, fp: fp, class: class, key: key}
 	if priority {
-		q.hi = append(q.hi, abs)
+		q.hi = append(q.hi, key)
 	} else {
-		q.lo = append(q.lo, abs)
+		q.lo = append(q.lo, key)
 	}
 	q.notifyWorker()
 }
@@ -377,7 +426,7 @@ func (q *Queue) notifyWorker() {
 // worker 后台生成循环。
 func (q *Queue) worker() {
 	for {
-		abs, ok := q.next()
+		j, ok := q.next()
 		if !ok {
 			// 队列暂时为空：等待新任务，而不是退出。
 			// 早前版本直接 return，导致 worker 在第一次空队列检查时就死了，
@@ -386,26 +435,19 @@ func (q *Queue) worker() {
 			continue
 		}
 
-		q.mu.Lock()
-		fp := q.pending[abs]
-		key := ThumbKey(abs, fp)
-		delete(q.pending, abs)
-		q.inflight[key] = true
-		q.mu.Unlock()
-
-		uri, err := q.gen(abs, fp)
+		uri, err := q.gen(j.abs, j.fp, j.class)
 
 		q.mu.Lock()
-		delete(q.inflight, key)
+		delete(q.inflight, j.key)
 		q.mu.Unlock()
 
 		if err == nil && uri != "" {
-			q.mem.Put(key, uri)
-			q.writeDisk(abs, fp, uri)
+			q.mem.Put(j.key, uri)
+			q.writeDisk(j, uri)
 			q.statsMu.Lock()
 			q.generated++
 			q.statsMu.Unlock()
-			q.emit(Result{ThumbKey: key, DataURI: uri})
+			q.emit(Result{ThumbKey: j.key, DataURI: uri})
 			continue
 		}
 
@@ -419,7 +461,7 @@ func (q *Queue) worker() {
 		if err == nil {
 			err = errors.New("生成结果为空")
 		}
-		q.reportError(abs, err)
+		q.reportError(j.abs, err)
 	}
 }
 
@@ -437,30 +479,40 @@ func (q *Queue) waitForTask() {
 }
 
 // next 取下一个任务（高优先级优先）。
-func (q *Queue) next() (string, bool) {
+func (q *Queue) next() (job, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for {
-		if q.closed {
-			return "", false
-		}
-		if len(q.hi) > 0 {
-			abs := q.hi[0]
-			q.hi = q.hi[1:]
-			return abs, true
-		}
-		if len(q.lo) > 0 {
-			abs := q.lo[0]
-			q.lo = q.lo[1:]
-			return abs, true
-		}
-		return "", false
+
+	if q.closed {
+		return job{}, false
 	}
+	if len(q.hi) > 0 {
+		key := q.hi[0]
+		q.hi = q.hi[1:]
+		return q.popJobLocked(key)
+	}
+	if len(q.lo) > 0 {
+		key := q.lo[0]
+		q.lo = q.lo[1:]
+		return q.popJobLocked(key)
+	}
+	return job{}, false
+}
+
+// popJobLocked 取出任务并标记为飞行中（调用方须持锁）。
+func (q *Queue) popJobLocked(key string) (job, bool) {
+	j, ok := q.jobs[key]
+	if !ok {
+		return job{}, false
+	}
+	delete(q.jobs, key)
+	q.inflight[key] = true
+	return j, true
 }
 
 // writeDisk 把缩略图写入磁盘缓存。
-func (q *Queue) writeDisk(abs string, fp Fingerprint, dataURI string) {
-	path := diskPath(q.diskDir, abs, fp)
+func (q *Queue) writeDisk(j job, dataURI string) {
+	path := diskPath(q.diskDir, j.abs, j.fp, j.class)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return
 	}
@@ -563,9 +615,14 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// DiskCachePath 导出磁盘缓存路径计算（供测试与外部清理使用）。
+// DiskCachePath 导出九宫格档的磁盘缓存路径（供测试与外部清理使用）。
 func DiskCachePath(diskDir, abs string, fp Fingerprint) string {
-	return diskPath(diskDir, abs, fp)
+	return diskPath(diskDir, abs, fp, SizeGrid)
+}
+
+// DiskCachePathSized 导出指定尺寸档的磁盘缓存路径。
+func DiskCachePathSized(diskDir, abs string, fp Fingerprint, class SizeClass) string {
+	return diskPath(diskDir, abs, fp, class)
 }
 
 // decodeBase64 从 data URI 中提取出原始字节。

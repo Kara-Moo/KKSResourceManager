@@ -1,8 +1,10 @@
 package preview
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -69,7 +71,7 @@ func TestLRUGetPromotes(t *testing.T) {
 // TestQueueRequestMissIsPending 验证未命中返回 pending 且不阻塞。
 func TestQueueRequestMissIsPending(t *testing.T) {
 	dir := t.TempDir()
-	q := NewQueue(dir, 2, func(abs string, fp Fingerprint) (string, error) {
+	q := NewQueue(dir, 2, func(abs string, fp Fingerprint, class SizeClass) (string, error) {
 		return "", nil
 	}, nil)
 	defer q.Close()
@@ -89,7 +91,7 @@ func TestQueueDedup(t *testing.T) {
 	var inflight atomic.Int32
 	release := make(chan struct{})
 
-	q := NewQueue(dir, 1, func(abs string, fp Fingerprint) (string, error) {
+	q := NewQueue(dir, 1, func(abs string, fp Fingerprint, class SizeClass) (string, error) {
 		inflight.Add(1)
 		<-release
 		return "", nil
@@ -118,7 +120,7 @@ func TestQueueConcurrentLimit(t *testing.T) {
 	var current atomic.Int32
 	var peak atomic.Int32
 
-	q := NewQueue(dir, 3, func(abs string, fp Fingerprint) (string, error) {
+	q := NewQueue(dir, 3, func(abs string, fp Fingerprint, class SizeClass) (string, error) {
 		n := current.Add(1)
 		for {
 			p := peak.Load()
@@ -147,7 +149,7 @@ func TestQueueDiskCache(t *testing.T) {
 	dir := t.TempDir()
 	var genCount atomic.Int32
 
-	q := NewQueue(dir, 2, func(abs string, fp Fingerprint) (string, error) {
+	q := NewQueue(dir, 2, func(abs string, fp Fingerprint, class SizeClass) (string, error) {
 		genCount.Add(1)
 		// 返回一个最小合法 data URI
 		return "data:image/jpeg;base64,/9j/4AAQSkZJRg==", nil
@@ -181,7 +183,7 @@ func TestQueueBatchNotify(t *testing.T) {
 	var mu sync.Mutex
 	var batches [][]Result
 
-	q := NewQueue(dir, 3, func(abs string, fp Fingerprint) (string, error) {
+	q := NewQueue(dir, 3, func(abs string, fp Fingerprint, class SizeClass) (string, error) {
 		return "data:image/jpeg;base64,/9j/4AAQSkZJRg==", nil
 	}, func(results []Result) {
 		mu.Lock()
@@ -223,7 +225,7 @@ func TestDiskPathSharded(t *testing.T) {
 // TestQueueCloseStopsWorkers 验证关闭后 worker 退出。
 func TestQueueCloseStopsWorkers(t *testing.T) {
 	dir := t.TempDir()
-	q := NewQueue(dir, 2, func(abs string, fp Fingerprint) (string, error) {
+	q := NewQueue(dir, 2, func(abs string, fp Fingerprint, class SizeClass) (string, error) {
 		return "", nil
 	}, nil)
 	q.Close()
@@ -233,3 +235,71 @@ func TestQueueCloseStopsWorkers(t *testing.T) {
 }
 
 var _ = os.Stat
+
+// TestSizeClassKeys 两档缓存键与磁盘路径必须互不冲突。
+//
+// 若共用一档：九宫格会把 320 图当大图用（糊），
+// 或大图生成后覆盖九宫格缓存（白解码 720×960）。
+func TestSizeClassKeys(t *testing.T) {
+	fp := Fingerprint{Size: 1234, ModTime: 5678}
+
+	grid := ThumbKey("C:/x/a.png", fp)
+	large := ThumbKeySized("C:/x/a.png", fp, SizeLarge)
+
+	if grid == large {
+		t.Fatal("grid 与 large 的缓存键必须不同")
+	}
+	if ThumbKey("C:/x/a.png", fp) != grid {
+		t.Error("ThumbKey 应等价于 SizeGrid 档")
+	}
+	if !strings.HasSuffix(large, "-l") {
+		t.Errorf("large 键应以 -l 结尾，实际 %q", large)
+	}
+
+	pGrid := DiskCachePath("C:/cache", "C:/x/a.png", fp)
+	pLarge := DiskCachePathSized("C:/cache", "C:/x/a.png", fp, SizeLarge)
+	if pGrid == pLarge {
+		t.Fatal("两档的磁盘路径必须不同，否则会互相覆盖")
+	}
+	if !strings.HasSuffix(pLarge, "-l.jpg") {
+		t.Errorf("large 磁盘文件名应以 -l.jpg 结尾，实际 %q", pLarge)
+	}
+}
+
+// TestQueueTwoClassesCoexist 同一文件的两档任务都能完成，互不吞掉。
+func TestQueueTwoClassesCoexist(t *testing.T) {
+	dir := t.TempDir()
+	var mu sync.Mutex
+	seen := map[SizeClass]int{}
+
+	gen := func(abs string, fp Fingerprint, class SizeClass) (string, error) {
+		mu.Lock()
+		seen[class]++
+		mu.Unlock()
+		return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("x")), nil
+	}
+	q := NewQueue(dir, 2, gen, nil)
+	defer q.Close()
+
+	fp := Fingerprint{Size: 1, ModTime: 2}
+	q.Request("C:/x/a.png", fp, true)                                  // grid
+	q.RequestSized("C:/x/a.png", fp, SizeLarge, true)                  // large
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if q.Stats().Generated >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	g, l := seen[SizeGrid], seen[SizeLarge]
+	mu.Unlock()
+	if g == 0 {
+		t.Error("grid 档应被生成")
+	}
+	if l == 0 {
+		t.Error("large 档应被生成 —— 若被 grid 任务去重吞掉，这里会是 0")
+	}
+}
