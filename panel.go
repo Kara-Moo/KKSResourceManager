@@ -493,7 +493,11 @@ func (m *Manager) panelFocusInfo(mode, dir, focusAbs, focusKind string) string {
 		size := m.dirSizeCached(dir)
 		return strconv.Itoa(cards) + " 张卡片 · " + strconv.Itoa(folders) + " 个子文件夹 · " + core.ParseSize(size)
 	}
-	return filepath.Base(focusAbs)
+	// 卡片信息栏：大小 + 依赖数，不重复文件名（v2.2 FIX-08）。
+	//
+	// 正常路径下卡片焦点已在 buildCardPanel 分流，这里只在
+	// 其它焦点类型误落到文件夹分支时兜底，保持文案一致。
+	return m.cardInfoLine(focusAbs)
 }
 
 // resolveRelDir 把「相对类型根的路径」解析为绝对目录。

@@ -46,7 +46,7 @@ func TestBuildTreePerformance(t *testing.T) {
 	m.Scanned = true
 
 	start := time.Now()
-	nodes := m.buildTree(m.SourceDir(ResourceKinds[0]), false)
+	nodes := m.buildTree(m.SourceDir(ResourceKinds[0]), false, ResourceKinds[0])
 	elapsed := time.Since(start)
 
 	t.Logf("构建 %d 个节点耗时 %v", len(nodes), elapsed)

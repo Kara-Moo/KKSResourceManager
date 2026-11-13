@@ -51,8 +51,8 @@ func TestConcurrentScanAndTreeRead(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				m.buildTree(m.SourceDir(ResourceKinds[0]), false)
-				m.buildTree(m.DelDir(ResourceKinds[0]), true)
+				m.buildTree(m.SourceDir(ResourceKinds[0]), false, ResourceKinds[0])
+				m.buildTree(m.DelDir(ResourceKinds[0]), true, ResourceKinds[0])
 				m.buildModsTree(m.DelZipmodDir())
 			}
 		}
@@ -95,8 +95,8 @@ func TestConcurrentTreeReadOnly(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
-				m.buildTree(m.SourceDir(ResourceKinds[0]), false)
-				m.buildTree(m.DelDir(ResourceKinds[0]), true)
+				m.buildTree(m.SourceDir(ResourceKinds[0]), false, ResourceKinds[0])
+				m.buildTree(m.DelDir(ResourceKinds[0]), true, ResourceKinds[0])
 			}
 		}()
 	}
@@ -157,7 +157,7 @@ func TestConcurrentDeriveAndIndex(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				m.buildTree(m.SourceDir(ResourceKinds[0]), false)
+				m.buildTree(m.SourceDir(ResourceKinds[0]), false, ResourceKinds[0])
 			}
 		}
 	}()

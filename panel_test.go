@@ -688,3 +688,65 @@ func TestPanelZipmodOrderStable(t *testing.T) {
 		t.Errorf("自然序不符：\n实际 %s\n期望 %s", got, strings.Join(want, ","))
 	}
 }
+
+// TestBuildTreeFiltersExtensions 列表不得混入非资源文件（FIX-06）。
+func TestBuildTreeFiltersExtensions(t *testing.T) {
+	env := newTestEnv(t)
+	m := env.manager
+	kind := ResourceKinds[0]
+
+	// 同一目录下放：1 张卡片 + 3 个非卡片文件 + 1 个子目录（内含 1 卡 + 1 jpg）
+	writeFile(t, env.femaleCard("real.png"), "png")
+	writeFile(t, env.femaleCard("Cache_4379b653c5a27864.jpg"), "jpg")
+	writeFile(t, env.femaleCard("Cache_4175e3ce77527a70.jpeg"), "jpeg")
+	writeFile(t, env.femaleCard("Halo.ppk"), "ppk")
+	writeFile(t, env.femaleCard("sub/inside.png"), "png")
+	writeFile(t, env.femaleCard("sub/inside.jpg"), "jpg")
+
+	nodes := m.buildTree(m.SourceDir(kind), false, kind)
+
+	files := 0
+	for _, n := range nodes {
+		if n.Type == "folder" {
+			continue
+		}
+		files++
+		if filepath.Ext(n.Name) != ".png" {
+			t.Errorf("列表混入了非卡片文件：%s（%s）", n.Name, n.Type)
+		}
+	}
+	if files != 2 {
+		t.Errorf("应只有 2 张卡片，实际 %d 个文件节点", files)
+	}
+
+	// 面板的卡片数应与列表行数一致（同一目录）
+	panel, err := m.BuildPanel("left", kind.Mode, "", m.SourceDir(kind))
+	if err != nil {
+		t.Fatalf("BuildPanel 失败: %v", err)
+	}
+	for _, sec := range panel.Sections {
+		if sec.ID == "cards" && sec.Total != 1 {
+			t.Errorf("根目录面板卡片数应为 1，实际 %d", sec.Total)
+		}
+	}
+}
+
+// TestBuildModsTreeFiltersExtensions zipmod 列表只收 .zipmod（FIX-06）。
+func TestBuildModsTreeFiltersExtensions(t *testing.T) {
+	env := newTestEnv(t)
+	m := env.manager
+
+	os.MkdirAll(m.ModsDir(), 0755)
+	writeFile(t, filepath.Join(m.ModsDir(), "a.zipmod"), "mod")
+	writeFile(t, filepath.Join(m.ModsDir(), "readme.txt"), "text")
+	writeFile(t, filepath.Join(m.ModsDir(), "backup.zipmod.bak"), "bak")
+	writeFile(t, filepath.Join(m.ModsDir(), "thumb.jpg"), "jpg")
+
+	nodes := m.buildModsTree(m.ModsDir())
+	if len(nodes) != 1 {
+		t.Fatalf("应只有 1 个 zipmod 节点，实际 %d", len(nodes))
+	}
+	if nodes[0].Name != "a.zipmod" {
+		t.Errorf("节点应为 a.zipmod，实际 %s", nodes[0].Name)
+	}
+}

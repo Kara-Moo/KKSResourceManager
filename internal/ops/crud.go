@@ -148,8 +148,9 @@ type Conflict struct {
 
 // PlanDelete 生成删除计划（零副作用）。
 //
-// specOf 用于确定条目归属的种类目录。
-func (s *TrashStore) PlanDelete(paths []string, specOf func(abs string) (string, bool)) DeletePlan {
+// specOf 返回 (种类, 该种类的根目录, 是否受管)。
+// 根目录用于计算原相对路径，使回收站保留原有目录结构（v2.2 FIX-07）。
+func (s *TrashStore) PlanDelete(paths []string, specOf func(abs string) (string, string, bool)) DeletePlan {
 	plan := DeletePlan{Items: make([]DeleteItem, 0, len(paths))}
 
 	for _, p := range paths {
@@ -161,7 +162,7 @@ func (s *TrashStore) PlanDelete(paths []string, specOf func(abs string) (string,
 			continue
 		}
 
-		spec, ok := specOf(p)
+		spec, root, ok := specOf(p)
 		if !ok {
 			plan.Conflicts = append(plan.Conflicts, Conflict{
 				Src: p, Reason: "不属于任何受管资源类型，无法删除",
@@ -175,11 +176,19 @@ func (s *TrashStore) PlanDelete(paths []string, specOf func(abs string) (string,
 			size = DirSize(p)
 		}
 
-		// 目标：DELED/<spec>/<原相对路径>（保留结构）
-		trashAbs := s.SpecDir(spec)
-		if !info.IsDir() {
-			// 单文件直接放 spec 目录下；重名加 __2
-			trashAbs = s.UniqueTrashPath(spec, name)
+		// 目标：DELED/<spec>/<原相对路径>（含文件名本身）。
+		//
+		// 早前单文件用 UniqueTrashPath(spec, name) —— 只取文件名，
+		// 丢掉了 22.7.27/ 这类子目录；不同目录的同名文件只能靠 __2 区分，
+		// 回收站里完全看不出原本在哪。
+		relSrc, relErr := filepath.Rel(root, p)
+		if relErr != nil || relSrc == "" || strings.HasPrefix(relSrc, "..") {
+			relSrc = name
+		}
+		trashAbs := filepath.Join(s.SpecDir(spec), filepath.FromSlash(filepath.ToSlash(relSrc)))
+		// 只有真的撞上了才加后缀，不再无条件 flatten
+		if _, statErr := os.Stat(trashAbs); statErr == nil {
+			trashAbs = uniqueTrashSuffix(trashAbs)
 		}
 
 		rel, relErr := filepath.Rel(s.dir, trashAbs)
@@ -198,6 +207,24 @@ func (s *TrashStore) PlanDelete(paths []string, specOf func(abs string) (string,
 	}
 
 	return plan
+}
+
+// uniqueTrashSuffix 只在目标路径真的已存在时生成 __2/__3… 后缀。
+//
+// 与 UniqueTrashPath 的区别：它作用于**完整相对路径**（含子目录），
+// 不再把不同目录的同名文件 flatten 到同一层。
+func uniqueTrashSuffix(path string) string {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	for i := 2; i <= 99; i++ {
+		candidate := filepath.Join(dir, fmt.Sprintf("%s__%d%s", stem, i, ext))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s__%d%s", stem, time.Now().UnixNano()%100000, ext))
 }
 
 // CommitDelete 执行删除：把条目移入回收站。

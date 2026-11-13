@@ -534,7 +534,7 @@ func (a *App) GetLeftTreeData(mode string) string {
 	}
 
 	root := manager.SourceDir(kind)
-	nodes := manager.buildTree(root, false)
+	nodes := manager.buildTree(root, false, kind)
 	return ok(TreeData{
 		Mode:     mode,
 		Root:     root,
@@ -559,7 +559,7 @@ func (a *App) GetRightTreeData(mode string) string {
 	}
 
 	root := manager.DelDir(kind)
-	nodes := manager.buildTree(root, true)
+	nodes := manager.buildTree(root, true, kind)
 	return ok(TreeData{
 		Mode:     mode,
 		Root:     root,
@@ -613,13 +613,18 @@ func (a *App) GetInstalledModsData() string {
 // 扫描过程在后台协程中进行，可能同时修改 Manager 的依赖索引，
 // 因此这里必须持有锁，避免数据竞争。
 // depsFor 在解析失败时会回写 DelFileDeps 缓存，故使用写锁。
-func (m *Manager) buildTree(root string, isDel bool) []TreeNode {
+func (m *Manager) buildTree(root string, isDel bool, kind ResourceKind) []TreeNode {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.buildTreeLocked(root, isDel)
+	return m.buildTreeLocked(root, isDel, kind)
 }
 
-func (m *Manager) buildTreeLocked(root string, isDel bool) []TreeNode {
+// buildTreeLocked 构建扁平节点列表。
+//
+// kind 决定哪些文件算「本类型的资源」。
+// 早前版本只要不是目录就当成 card 节点 —— 于是 Cache_*.jpg、Halo.ppk
+// 之类混进列表；全选隔离还会把它们一起移走，用户根本没想动这些文件。
+func (m *Manager) buildTreeLocked(root string, isDel bool, kind ResourceKind) []TreeNode {
 	nodes := make([]TreeNode, 0, 64)
 	if root == "" {
 		return nodes
@@ -657,6 +662,12 @@ func (m *Manager) buildTreeLocked(root string, isDel bool) []TreeNode {
 				Path:        filepath.ToSlash(parent),
 				FolderStats: agg.toFolderStats(path),
 			})
+			return nil
+		}
+
+		// 只收录本类型的资源文件（v2.2 FIX-06）。
+		// 目录仍要继续 walk，但目录里的非资源文件一律跳过。
+		if kind.FileExt != "" && !strings.EqualFold(filepath.Ext(path), kind.FileExt) {
 			return nil
 		}
 
@@ -775,6 +786,10 @@ func (m *Manager) buildModsTree(root string) []TreeNode {
 	}
 	for _, e := range entries {
 		if e.IsDir() {
+			continue
+		}
+		// 只收录 zipmod（同 FIX-06：mods 目录下常有 readme / .txt / 备份文件）
+		if !strings.EqualFold(filepath.Ext(e.Name()), ".zipmod") {
 			continue
 		}
 		info, err := e.Info()

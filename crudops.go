@@ -22,26 +22,28 @@ func (m *Manager) trashStore() (*ops.TrashStore, error) {
 	return ops.NewTrashStore(m.DelCardsRoot)
 }
 
-// specOf 判断路径所属的资源种类。
+// specOf 判断路径所属的资源种类与该种类的根目录。
 //
-// 用于删除时决定放进 DELED 的哪个子目录。
-func (m *Manager) specOf(abs string) (string, bool) {
+// root 用于计算「原相对路径」—— 回收站必须保留这个结构，
+// 否则删两个不同子目录里的同名 2.png 会变成 2.png / 2__2.png，
+// 用户完全看不出原本在哪（v2.2 FIX-07）。
+func (m *Manager) specOf(abs string) (string, string, bool) {
 	// zipmod：mods 侧与 DEL-zipmod 侧都算 zipmod
 	if _, ok := ops.SpecOfMods(abs, m.ModsDir()); ok {
-		return "zipmod", true
+		return "zipmod", m.ModsDir(), true
 	}
 	if strings.HasPrefix(abs, m.DelZipmodDir()+string(filepath.Separator)) {
-		return "zipmod", true
+		return "zipmod", m.DelZipmodDir(), true
 	}
 	for _, kind := range ResourceKinds {
 		if r, err := filepath.Rel(m.SourceDir(kind), abs); err == nil && !strings.HasPrefix(r, "..") {
-			return kind.Mode, true
+			return kind.Mode, m.SourceDir(kind), true
 		}
 		if r, err := filepath.Rel(m.DelDir(kind), abs); err == nil && !strings.HasPrefix(r, "..") {
-			return kind.Mode, true
+			return kind.Mode, m.DelDir(kind), true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // CmdMkdir 在指定目录下新建文件夹。

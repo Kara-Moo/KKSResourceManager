@@ -3,6 +3,7 @@ package ops
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -55,7 +56,7 @@ func TestDeleteRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("写文件失败: %v", err)
 	}
 
-	specOf := func(abs string) (string, bool) { return "female_card", true }
+	specOf := func(abs string) (string, string, bool) { return "female_card", base, true }
 
 	// 计划
 	plan := store.PlanDelete([]string{src}, specOf)
@@ -119,7 +120,7 @@ func TestRestoreConflict(t *testing.T) {
 	src := filepath.Join(base, "a.png")
 	os.WriteFile(src, []byte("original"), 0644)
 
-	specOf := func(abs string) (string, bool) { return "female_card", true }
+	specOf := func(abs string) (string, string, bool) { return "female_card", base, true }
 	plan := store.PlanDelete([]string{src}, specOf)
 	store.CommitDelete(nil, plan)
 
@@ -150,7 +151,7 @@ func TestPurgeRemovesPermanently(t *testing.T) {
 
 	src := filepath.Join(base, "a.png")
 	os.WriteFile(src, []byte("x"), 0644)
-	specOf := func(abs string) (string, bool) { return "female_card", true }
+	specOf := func(abs string) (string, string, bool) { return "female_card", base, true }
 	plan := store.PlanDelete([]string{src}, specOf)
 	store.CommitDelete(nil, plan)
 
@@ -182,7 +183,7 @@ func TestDeleteFolderMovesWholeTree(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "sub", "deep", "x.png"), []byte("x"), 0644)
 	os.WriteFile(filepath.Join(dir, "a.png"), []byte("a"), 0644)
 
-	specOf := func(abs string) (string, bool) { return "female_card", true }
+	specOf := func(abs string) (string, string, bool) { return "female_card", base, true }
 	plan := store.PlanDelete([]string{dir}, specOf)
 	if len(plan.Items) != 1 {
 		t.Fatalf("应只有 1 个计划项（整棵树一次移动），实际 %d", len(plan.Items))
@@ -210,12 +211,95 @@ func TestDeleteOutsideScope(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "outside.png")
 	os.WriteFile(outside, []byte("x"), 0644)
 
-	specOf := func(abs string) (string, bool) { return "", false }
+	specOf := func(abs string) (string, string, bool) { return "", "", false }
 	plan := store.PlanDelete([]string{outside}, specOf)
 	if len(plan.Items) != 0 {
 		t.Error("范围外的条目不应进入计划")
 	}
 	if len(plan.Conflicts) != 1 {
 		t.Errorf("应有 1 个冲突，实际 %d", len(plan.Conflicts))
+	}
+}
+
+// TestPlanDeletePreservesSubdirs 回收站必须保留原目录结构（v2.2 FIX-07）。
+//
+// 这是回归测试：早前 PlanDelete 对单文件用 UniqueTrashPath(spec, name)，
+// 只取文件名，删两个不同子目录里的同名 2.png 会变成 2.png / 2__2.png。
+func TestPlanDeletePreservesSubdirs(t *testing.T) {
+	base := t.TempDir()
+	store, _ := NewTrashStore(filepath.Join(base, "DELCARDS"))
+
+	root := filepath.Join(base, "KKV114", "UserData", "chara", "female")
+	dirA := filepath.Join(root, "22.7.27")
+	dirB := filepath.Join(root, "22.7.28")
+	if err := os.MkdirAll(dirA, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dirB, 0755); err != nil {
+		t.Fatal(err)
+	}
+	a := filepath.Join(dirA, "2.png")
+	b := filepath.Join(dirB, "2.png")
+	if err := os.WriteFile(a, []byte("AAA"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte("BBB"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	specOf := func(abs string) (string, string, bool) {
+		return "female_card", root, true
+	}
+	plan := store.PlanDelete([]string{a, b}, specOf)
+	if len(plan.Items) != 2 {
+		t.Fatalf("应有 2 个待删项，实际 %d；冲突 %v", len(plan.Items), plan.Conflicts)
+	}
+
+	want := map[string]bool{
+		"female_card/22.7.27/2.png": false,
+		"female_card/22.7.28/2.png": false,
+	}
+	for _, item := range plan.Items {
+		if _, ok := want[item.TrashRel]; !ok {
+			t.Errorf("trashRel 丢失了子目录或意外加了后缀：%q", item.TrashRel)
+			continue
+		}
+		want[item.TrashRel] = true
+		if strings.Contains(item.TrashRel, "__2") {
+			t.Errorf("不该出现 __N 后缀（两个文件本就不冲突）：%q", item.TrashRel)
+		}
+	}
+	for rel, seen := range want {
+		if !seen {
+			t.Errorf("缺少期望的路径 %q", rel)
+		}
+	}
+
+	// 执行删除 → 两条各自在自己的子目录
+	moved, errs := store.CommitDelete(nil, plan)
+	if moved != 2 {
+		t.Fatalf("应移动 2 项，实际 %d，错误 %v", moved, errs)
+	}
+	for rel := range want {
+		abs := filepath.Join(store.Dir(), filepath.FromSlash(rel))
+		if _, err := os.Stat(abs); err != nil {
+			t.Errorf("回收站缺少 %s: %v", rel, err)
+		}
+	}
+
+	// 还原 → 两条都回到原位
+	rels := []string{"female_card/22.7.27/2.png", "female_card/22.7.28/2.png"}
+	res := store.Restore(nil, rels)
+	if res.Restored != 2 {
+		t.Errorf("应还原 2 项，实际 %d，冲突 %v", res.Restored, res.Conflicts)
+	}
+	for _, p := range []string{a, b} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("未回到原位 %s: %v", p, err)
+		}
+	}
+	meta, _ := store.Load()
+	if len(meta) != 0 {
+		t.Errorf("还原后元数据应清空，实际 %d 条", len(meta))
 	}
 }
