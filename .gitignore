@@ -1,0 +1,7 @@
+# 构建产物
+build/bin/
+*.exe
+# 参考源码（仅供溯源，不参与编译）
+reference/
+# Go 测试产物
+*.test

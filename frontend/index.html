@@ -1,0 +1,1373 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>KKS 资源管理器 (KKS Resource Manager)</title>
+    <style>
+        :root {
+            --bg: #eef2f5; --panel-bg: #ffffff; --border: #d1d9e0;
+            --primary: #0078d4; --success: #107c10; --danger: #d13438; --warning: #ffb900;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; background-color: var(--bg); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+        .top-bar { background: #2b2b2b; color: white; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+        .top-bar h1 { font-size: 16px; white-space: nowrap; }
+        .top-left { display: flex; align-items: center; gap: 12px; }
+        .mode-selector { background: #444; color: white; border: 1px solid #666; padding: 5px 10px; border-radius: 4px; font-size: 14px; outline: none; }
+        .btn-root { background: var(--primary); padding: 6px 14px; font-size: 13px; }
+        .root-label { font-size: 12px; color: #cfd8dc; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        /* 状态区域：红底黑字 + 蓝色进度条 */
+        .status-box {
+            background: #d13438; color: #000; border-radius: 4px;
+            padding: 5px 10px; min-width: 380px; max-width: 520px;
+            display: flex; flex-direction: column; gap: 4px;
+            border: 1px solid #7a1518;
+        }
+        .status-box.state-loading { background: #d13438; color: #000; animation: blink-bg 1s steps(1, end) infinite; }
+        .status-box.state-error   { background: #d13438; color: #000; animation: none; }
+        .status-box.state-done    { background: #2b2b2b; color: #fff; border-color: #444; }
+        .status-text { font-size: 12px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .progress-track { height: 6px; background: rgba(0,0,0,0.25); border-radius: 3px; overflow: hidden; display: none; }
+        .status-box.state-loading .progress-track,
+        .status-box.state-error .progress-track { display: block; }
+        .progress-fill { height: 100%; width: 0%; background: #0078d4; transition: width 0.15s linear; }
+        .status-box.state-error .progress-fill { background: var(--warning); }
+        @keyframes blink-bg {
+            0%   { background: #d13438; }
+            50%  { background: #ffffff; }
+            100% { background: #d13438; }
+        }
+
+        .main-layout { display: flex; flex: 1; padding: 10px; gap: 10px; min-height: 0; }
+        .list-panel { flex: 1; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+
+        .panel-header { padding: 10px; background: #f8f9fa; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; border-radius: 6px 6px 0 0; }
+        .path-display { font-size: 12px; color: #666; background: #e9ecef; padding: 4px 8px; border-radius: 4px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: all; }
+        .list-content { flex: 1; overflow-y: auto; padding: 5px; }
+
+        .list-item { display: flex; align-items: center; padding: 6px 10px; border-radius: 4px; cursor: pointer; margin-bottom: 2px; user-select: none; }
+        .list-item:hover { background: #f1f3f5; }
+        .list-item.is-folder { color: var(--warning); font-weight: 600; }
+        .list-item.is-card { color: #333; }
+        .list-item.is-mod { color: #5d4037; }
+        .list-item.is-hidden { color: #6a1b9a; font-weight: 600; }
+        .list-item input[type="checkbox"] { margin-right: 10px; cursor: pointer; }
+        .list-item .name { flex: 1; }
+        .list-item .size { font-size: 11px; color: #999; margin-left: 8px; }
+
+        /* 焦点行：浅蓝底突出显示当前预览项 */
+        .list-item.is-focused { background: #cfe4ff !important; }
+        .list-item.is-focused .name { color: #0b3d66; }
+
+        /* 长名称截断：超过最大长度时末尾显示 ... */
+        .list-item .name {
+            max-width: 320px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        /* 焦点行展开完整名称（换行显示） */
+        .list-item.is-focused .name {
+            max-width: none;
+            white-space: normal;
+            word-break: break-all;
+            overflow: visible;
+            text-overflow: clip;
+            line-height: 1.35;
+        }
+
+        /* 隐藏项的灰色小标签（区分方式不靠图标） */
+        .hidden-tag {
+            font-size: 10px;
+            color: #888;
+            background: #eceff1;
+            border: 1px solid #d5d9dd;
+            border-radius: 3px;
+            padding: 0 5px;
+            margin-left: 6px;
+            flex-shrink: 0;
+        }
+        .list-item.is-hidden .name { color: #8b95a1; font-weight: 400; }
+
+        /* 全选复选框的三态（indeterminate） */
+        input[type="checkbox"]:indeterminate { background: var(--primary); }
+
+        /* 隐藏空文件夹的图标按钮（眼睛带斜杠） */
+        .btn-hide-folder {
+            margin-left: 6px;
+            padding: 1px 4px;
+            font-size: 12px;
+            line-height: 1.2;
+            background: transparent;
+            color: #888;
+            border: 1px solid transparent;
+            border-radius: 3px;
+            flex-shrink: 0;
+        }
+        .btn-hide-folder:hover { background: #e0e0e0; border-color: #bbb; filter: none; }
+
+        /* 右键菜单 */
+        .context-menu {
+            position: fixed;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+            min-width: 150px;
+            z-index: 9999;
+            display: none;
+            padding: 4px 0;
+        }
+        .context-menu.show { display: block; }
+        .context-menu .menu-item {
+            padding: 7px 16px;
+            font-size: 13px;
+            color: #333;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .context-menu .menu-item:hover { background: #0078d4; color: #fff; }
+        .context-menu .menu-item.disabled { color: #aaa; cursor: not-allowed; }
+        .context-menu .menu-item.disabled:hover { background: transparent; color: #aaa; }
+        .context-menu .menu-sep { height: 1px; background: var(--border); margin: 4px 0; }
+
+        /* 模式切换按钮 */
+        .btn-mode {
+            padding: 6px 14px;
+            font-size: 13px;
+            color: #fff;
+            border-radius: 4px;
+            border: none;
+            font-weight: bold;
+        }
+        .btn-mode.mode-free { background: #d13438; }
+        .btn-mode.mode-safe { background: #107c10; }
+
+        /* 自由修改模式工具条 */
+        .clip-toolbar {
+            display: none;
+            gap: 6px;
+            padding: 6px 10px;
+            background: #f0f4f8;
+            border-bottom: 1px solid var(--border);
+            align-items: center;
+        }
+        .clip-toolbar.show { display: flex; }
+        .clip-toolbar button {
+            padding: 4px 12px;
+            font-size: 12px;
+            font-weight: normal;
+            background: #5a6b7b;
+        }
+        .clip-toolbar button:hover:not(:disabled) { background: #46586a; }
+        .clip-toolbar button:disabled { opacity: 0.45; cursor: not-allowed; }
+        .clip-toolbar .clip-hint { font-size: 11px; color: #667; margin-left: auto; }
+
+        .center-panel { width: 160px; display: flex; flex-direction: column; justify-content: center; gap: 12px; }
+        button { padding: 10px; border: none; border-radius: 4px; color: white; cursor: pointer; font-weight: bold; transition: filter 0.2s; }
+        button:hover { filter: brightness(0.9); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; filter: none; }
+        .btn-execute { background: var(--success); }
+        .btn-reset { background: var(--warning); color: #000; }
+        .btn-switch { background: var(--primary); }
+
+        .right-panel { width: 320px; display: flex; flex-direction: column; gap: 10px; }
+        .preview-box { flex: 1; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px; }
+        .preview-img { width: 150px; height: 200px; background: #eee; border: 2px dashed #ccc; display: flex; align-items: center; justify-content: center; color: #999; margin-bottom: 10px; text-align: center; padding: 10px; word-break: break-all; }
+        .preview-img img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+        /* 文件夹预览：2x2 窗格 */
+        .folder-preview { width: 100%; margin-bottom: 10px; }
+        .folder-stats { font-size: 12px; color: #444; text-align: center; margin-bottom: 8px; line-height: 1.6; }
+        .folder-stats b { color: #0b3d66; }
+        .preview-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+        .preview-cell {
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: #fafbfc;
+            padding: 4px;
+            text-align: center;
+            overflow: hidden;
+            min-height: 74px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .preview-cell img { max-width: 100%; max-height: 54px; object-fit: contain; }
+        .preview-cell .cell-name {
+            font-size: 10px;
+            color: #555;
+            margin-top: 3px;
+            word-break: break-all;
+            line-height: 1.25;
+            max-height: 30px;
+            overflow: hidden;
+        }
+        .preview-cell .cell-count { font-size: 10px; color: #999; }
+        .preview-cell.more { background: #eef3f8; color: #456; }
+        .preview-cell.more .cell-name { color: #334; font-size: 11px; font-weight: bold; }
+
+        .log-box { height: 250px; background: #1e1e1e; color: #d4d4d4; border-radius: 6px; padding: 10px; overflow-y: auto; font-family: 'Consolas', monospace; font-size: 12px; }
+        .log-success { color: #4ec9b0; }
+        .log-warn { color: #dcdcaa; }
+        .log-err { color: #f48771; }
+        .log-info { color: #9cdcfe; }
+    </style>
+</head>
+<body>
+
+    <div class="top-bar">
+        <div class="top-left">
+            <h1>KKS 资源管理器</h1>
+            <button class="btn-root" id="btn-select-root">📁 选择 KKS 根目录</button>
+            <button class="btn-mode mode-safe" id="btn-mode">🛡 安全加载隔离模式</button>
+            <span class="root-label" id="root-label">尚未选择目录</span>
+        </div>
+        <div class="top-left">
+            <!-- 状态区域：位于「当前管理类型」之前 -->
+            <div class="status-box" id="status-box">
+                <div class="status-text" id="status-text">未选择路径</div>
+                <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+            </div>
+            <label for="mode-select" style="font-size:14px; margin-right:10px;">当前管理类型：</label>
+            <select id="mode-select" class="mode-selector">
+                <option value="female_card">角色卡 (Female)</option>
+                <option value="male_card">角色卡 (Male)</option>
+                <option value="scene">场景卡 (Scene)</option>
+                <option value="pose">POSE 动作</option>
+                <option value="coord_f">女性服装 (Coordinate)</option>
+                <option value="coord_m">男性服装 (Coordinate)</option>
+                <option value="zipmod">Zipmod (只读)</option>
+                <option value="invisible">隐藏的文件夹</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="main-layout">
+        <div class="list-panel">
+            <div class="panel-header">
+                <input type="checkbox" id="select-all-left">
+                <div class="path-display" id="left-path">路径加载中...</div>
+                <button id="btn-back-left" style="display:none; padding:2px 8px; font-size:12px; background:#6c757d;">返回</button>
+            </div>
+            <div class="clip-toolbar" id="clip-toolbar-left">
+                <button id="btn-copy-left">📋 复制</button>
+                <button id="btn-cut-left">✂️ 剪切</button>
+                <button id="btn-paste-left">📥 粘贴</button>
+                <span class="clip-hint" id="clip-hint-left">自由修改模式可用</span>
+            </div>
+            <div class="list-content" id="left-list"></div>
+        </div>
+
+        <div class="center-panel">
+            <button class="btn-execute" id="btn-exec-left">▶ 确认隔离</button>
+            <button class="btn-execute" id="btn-exec-right" style="background:#005a9e;">◀ 恢复启用</button>
+            <button class="btn-reset" id="btn-restore-hidden" style="display:none; background:#6f42c1;">♻ 恢复隐藏文件夹</button>
+            <button class="btn-reset" id="btn-reset">清除选择</button>
+            <button class="btn-switch" id="btn-switch-mode">重新扫描</button>
+        </div>
+
+        <div class="list-panel" style="flex: 1.5;">
+            <div class="panel-header">
+                <input type="checkbox" id="select-all-right">
+                <div class="path-display" id="right-path">DEL 隔离区</div>
+                <button id="btn-back-right" style="display:none; padding:2px 8px; font-size:12px; background:#6c757d;">返回</button>
+            </div>
+            <div class="clip-toolbar" id="clip-toolbar-right">
+                <button id="btn-copy-right">📋 复制</button>
+                <button id="btn-cut-right">✂️ 剪切</button>
+                <button id="btn-paste-right">📥 粘贴</button>
+                <span class="clip-hint" id="clip-hint-right">自由修改模式可用</span>
+            </div>
+            <div class="list-content" id="right-list"></div>
+        </div>
+
+        <div class="right-panel">
+            <div class="preview-box">
+                <div class="preview-img" id="preview-img">暂无预览</div>
+                <h4 id="preview-title">未选择文件</h4>
+                <div id="preview-mods" style="font-size:12px; color:#666; margin-top:5px; text-align:center; word-break: break-all;"></div>
+            </div>
+            <div class="log-box" id="log-box"></div>
+        </div>
+    </div>
+
+    <!-- 右键菜单 -->
+    <div class="context-menu" id="context-menu"></div>
+
+<script>
+    // =====================================================================
+    // 数据层：全部通过 Wails 绑定访问后端，后端返回 JSON 字符串
+    //
+    //   window.go.main.App.SelectKKSRoot()
+    //   window.go.main.App.GetLeftTreeData(mode)
+    //   window.go.main.App.GetRightTreeData(mode)
+    //   window.go.main.App.ExecuteIsolate(paths, mode)
+    //   window.go.main.App.ExecuteRestore(paths, mode)
+    // =====================================================================
+
+    // 每个 mode 对应的标题（后端同时会返回真实根路径）
+    const modeLabels = {
+        "female_card": "角色卡 (Female)",
+        "male_card":   "角色卡 (Male)",
+        "scene":       "场景卡 (Scene)",
+        "pose":        "POSE 动作",
+        "coord_f":     "女性服装 (Coordinate)",
+        "coord_m":     "男性服装 (Coordinate)",
+        "zipmod":      "Zipmod"
+    };
+
+    // 状态与 DOM
+    let currentMode = 'female_card';
+    let leftCurrentPath = '';
+    let rightCurrentPath = '';
+    let leftSelected = new Set();
+    let rightSelected = new Set();
+    let leftNodes = [];
+    let rightNodes = [];
+    let leftRoot = '';
+    let rightRoot = '';
+    let kksReady = false;
+
+    // 焦点：当前预览的条目。点击行只切换焦点，不会改变勾选状态。
+    let leftFocus = null;   // { id, name, type, path, mods, modNames }
+    let rightFocus = null;
+
+    // 操作模式：safe = 安全加载隔离模式，free = 自由修改模式
+    let opMode = 'safe';
+
+    const elLeftList = document.getElementById('left-list');
+    const elRightList = document.getElementById('right-list');
+    const elLeftPath = document.getElementById('left-path');
+    const elRightPath = document.getElementById('right-path');
+    const elLog = document.getElementById('log-box');
+    const elSelectAllLeft = document.getElementById('select-all-left');
+    const elSelectAllRight = document.getElementById('select-all-right');
+    const elBtnBackLeft = document.getElementById('btn-back-left');
+    const elBtnBackRight = document.getElementById('btn-back-right');
+    const elRootLabel = document.getElementById('root-label');
+    const elStatusBox = document.getElementById('status-box');
+    const elStatusText = document.getElementById('status-text');
+    const elProgressFill = document.getElementById('progress-fill');
+    const elContextMenu = document.getElementById('context-menu');
+    const elBtnMode = document.getElementById('btn-mode');
+    const elBtnExecLeft = document.getElementById('btn-exec-left');
+    const elBtnExecRight = document.getElementById('btn-exec-right');
+    const elBtnRestoreHidden = document.getElementById('btn-restore-hidden');
+
+    // ---------------------------------------------------------------------
+    // 状态区域
+    //   idle    : 未选择路径 —— 红底黑字，进度条隐藏
+    //   loading : 正在加载   —— 红白闪烁(1s)，蓝色进度条推进
+    //   error   : 加载错误   —— 红底黑字，进度条中止并变黄
+    //   done    : 扫描完成   —— 黑底白字，进度条消失
+    // ---------------------------------------------------------------------
+
+    function setStatus(state, text, percent) {
+        elStatusBox.classList.remove('state-loading', 'state-error', 'state-done');
+        if (state === 'loading') {
+            elStatusBox.classList.add('state-loading');
+        } else if (state === 'error') {
+            elStatusBox.classList.add('state-error');
+        } else if (state === 'done') {
+            elStatusBox.classList.add('state-done');
+        }
+        elStatusText.innerText = text;
+        if (typeof percent === 'number' && isFinite(percent)) {
+            const p = Math.max(0, Math.min(100, percent));
+            elProgressFill.style.width = p + '%';
+        } else {
+            elProgressFill.style.width = '0%';
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 操作模式切换
+    // ---------------------------------------------------------------------
+
+    function applyOpMode() {
+        const isFree = opMode === 'free';
+        // 按钮外观：自由模式红色，安全模式绿色
+        elBtnMode.classList.toggle('mode-free', isFree);
+        elBtnMode.classList.toggle('mode-safe', !isFree);
+        elBtnMode.innerText = isFree ? '⚠ 自由修改模式' : '🛡 安全加载隔离模式';
+
+        // 剪贴板工具条只在自由修改模式显示
+        document.getElementById('clip-toolbar-left').classList.toggle('show', isFree);
+        document.getElementById('clip-toolbar-right').classList.toggle('show', isFree);
+
+        // 隐藏的文件夹模式下，隔离/启用按钮变灰禁用
+        const isInvisible = currentMode === 'invisible';
+        elBtnExecLeft.disabled = isInvisible;
+        elBtnExecRight.disabled = isInvisible;
+        elBtnRestoreHidden.style.display = isInvisible ? 'block' : 'none';
+
+        log(isFree
+            ? '已切换到「自由修改模式」：可自由复制/剪切/粘贴，请自行确保依赖安全。'
+            : '已切换到「安全加载隔离模式」：隔离与启用会严格校验 zipmod 依赖。');
+    }
+
+    elBtnMode.onclick = () => {
+        opMode = (opMode === 'free') ? 'safe' : 'free';
+        applyOpMode();
+        renderAll();
+    };
+
+    // 模式或管理种类变化时，同步按钮可用状态
+    function syncModeButtons() {
+        const isInvisible = currentMode === 'invisible';
+        elBtnExecLeft.disabled = isInvisible;
+        elBtnExecRight.disabled = isInvisible;
+        elBtnRestoreHidden.style.display = isInvisible ? 'block' : 'none';
+    }
+
+    // ---------------------------------------------------------------------
+    // 工具
+    // ---------------------------------------------------------------------
+
+    function log(msg, type = 'info') {
+        const span = document.createElement('div');
+        span.className = type === 'success' ? 'log-success'
+                       : type === 'warn' ? 'log-warn'
+                       : type === 'err' ? 'log-err'
+                       : 'log-info';
+        span.innerText = `> ${msg}`;
+        elLog.appendChild(span);
+        elLog.scrollTop = elLog.scrollHeight;
+    }
+
+    // 解析后端统一响应：{success, message, data}
+    function unwrap(raw) {
+        if (raw === undefined || raw === null) {
+            return { success: false, message: '后端无响应。', data: null };
+        }
+        let obj;
+        try {
+            obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        } catch (e) {
+            return { success: false, message: '返回数据解析失败: ' + raw, data: null };
+        }
+        if (!obj || typeof obj !== 'object') {
+            return { success: false, message: String(raw), data: null };
+        }
+        return obj;
+    }
+
+    // 统一的异步调用封装
+    async function callBackend(method, ...args) {
+        try {
+            const app = window.go && window.go.main && window.go.main.App;
+            if (!app) {
+                log('Wails 运行时未就绪，无法调用后端。', 'err');
+                return { success: false, message: 'Wails 运行时未就绪。', data: null };
+            }
+            if (!app[method]) {
+                log(`后端方法 ${method} 不存在。`, 'err');
+                return { success: false, message: `后端方法 ${method} 不存在。`, data: null };
+            }
+            const raw = await app[method](...args);
+            return unwrap(raw);
+        } catch (e) {
+            log('调用后端异常: ' + e, 'err');
+            return { success: false, message: String(e), data: null };
+        }
+    }
+
+    function formatSize(bytes) {
+        if (!bytes) return '';
+        const units = ['B', 'KB', 'MB', 'GB'];
+        let v = bytes, i = 0;
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+        return v.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+    }
+
+    // ---------------------------------------------------------------------
+    // 预览
+    // ---------------------------------------------------------------------
+
+    // 预览：图片由后端缩放后以 base64 data URI 返回
+    // （Wails 的 WebView 无法直接加载 file:// 本地绝对路径）
+    let previewSeq = 0;
+
+    async function updatePreview(item) {
+        const seq = ++previewSeq;
+        document.getElementById('preview-title').innerText = item.name;
+
+        const imgBox = document.getElementById('preview-img');
+        imgBox.innerHTML = '';
+
+        // 文件夹：显示统计信息与 2x2 子文件夹预览窗格
+        if (item.type === 'folder') {
+            await renderFolderPreview(item, seq);
+            return;
+        }
+
+        const loading = document.createElement('div');
+        loading.innerText = '加载中...';
+        imgBox.appendChild(loading);
+
+        const res = await callBackend('GetCardPreview', item.id);
+        // 期间用户又切换了焦点，则丢弃本次结果，避免旧图覆盖新图
+        if (seq !== previewSeq) return;
+
+        const data = (res && res.data) || {};
+
+        imgBox.innerHTML = '';
+        if (res.success && data.dataUri) {
+            const img = document.createElement('img');
+            img.src = data.dataUri;
+            img.alt = item.name;
+            imgBox.appendChild(img);
+        } else {
+            const msg = document.createElement('div');
+            msg.innerText = data.message ? ('无法预览\n' + data.message) : '无法预览';
+            imgBox.appendChild(msg);
+        }
+
+        const names = item.modNames || [];
+        document.getElementById('preview-mods').innerHTML = names.length
+            ? names.join('<br>')
+            : '无 Zipmod 依赖';
+    }
+
+    // renderFolderPreview 渲染文件夹预览：统计 + 2x2 窗格。
+    async function renderFolderPreview(item, seq) {
+        const imgBox = document.getElementById('preview-img');
+        imgBox.innerHTML = '';
+        imgBox.style.display = 'block';
+        imgBox.style.width = '100%';
+        imgBox.style.height = 'auto';
+
+        const loading = document.createElement('div');
+        loading.innerText = '加载中...';
+        imgBox.appendChild(loading);
+
+        const res = await callBackend('GetFolderPreview', item.id);
+        if (seq !== previewSeq) return;
+
+        const data = (res && res.data) || {};
+        const stats = data.stats || {};
+        const previews = data.previews || [];
+
+        imgBox.innerHTML = '';
+        const wrap = document.createElement('div');
+        wrap.className = 'folder-preview';
+
+        // 统计摘要
+        const statBox = document.createElement('div');
+        statBox.className = 'folder-stats';
+        statBox.innerHTML =
+            `子文件夹 <b>${stats.subfolderCount || 0}</b> 个<br>` +
+            `卡片 <b>${stats.cardCount || 0}</b> 张<br>` +
+            `共 <b>${stats.totalFiles || 0}</b> 个文件 (${formatSize(stats.totalSize || 0)})`;
+        wrap.appendChild(statBox);
+
+        // 2x2 窗格：最多 3 个子文件夹 + 1 个「还有 xxx」
+        const grid = document.createElement('div');
+        grid.className = 'preview-grid';
+
+        previews.forEach(p => {
+            const cell = document.createElement('div');
+            cell.className = 'preview-cell';
+            if (p.dataUri) {
+                const img = document.createElement('img');
+                img.src = p.dataUri;
+                img.alt = p.name;
+                cell.appendChild(img);
+            }
+            const nm = document.createElement('div');
+            nm.className = 'cell-name';
+            nm.innerText = p.name;
+            cell.appendChild(nm);
+            const ct = document.createElement('div');
+            ct.className = 'cell-count';
+            ct.innerText = p.count + ' 个文件';
+            cell.appendChild(ct);
+            grid.appendChild(cell);
+        });
+
+        const remaining = data.remainingFolders || [];
+        if (remaining.length > 0) {
+            const cell = document.createElement('div');
+            cell.className = 'preview-cell more';
+            const nm = document.createElement('div');
+            nm.className = 'cell-name';
+            nm.innerText = '还有 ' + remaining.length + ' 个子文件夹\n' + remaining.join('\n');
+            cell.appendChild(nm);
+            grid.appendChild(cell);
+        }
+
+        wrap.appendChild(grid);
+        imgBox.appendChild(wrap);
+        document.getElementById('preview-mods').innerHTML = '';
+    }
+
+    function clearPreview() {
+        const imgBox = document.getElementById('preview-img');
+        imgBox.innerHTML = '暂无预览';
+        imgBox.style.display = 'flex';
+        imgBox.style.width = '150px';
+        imgBox.style.height = '200px';
+        document.getElementById('preview-title').innerText = '未选择文件';
+        document.getElementById('preview-mods').innerHTML = '';
+    }
+
+    // ---------------------------------------------------------------------
+    // 列表渲染（沿用 path 字段做多级目录匹配）
+    // ---------------------------------------------------------------------
+
+    // syncSelectAll 同步「全选」复选框状态。
+    //
+    // 全选语义 = 当前目录下的**所有可见条目**（文件夹 + 文件 + 隐藏项）。
+    // 历史 bug：只统计 type !== 'folder'，导致 `female/` 这类全是文件夹的
+    // 根目录下全选复选框被禁用（灰掉不可用）。
+    function syncSelectAll(side) {
+        const isLeft = side === 'left';
+        const nodes = isLeft ? leftNodes : rightNodes;
+        const path = isLeft ? leftCurrentPath : rightCurrentPath;
+        const selectedSet = isLeft ? leftSelected : rightSelected;
+        const elSelectAll = isLeft ? elSelectAllLeft : elSelectAllRight;
+
+        const rows = nodes.filter(n => n.path === path);
+        const total = rows.length;
+        const picked = rows.filter(n => isItemSelected(side, n)).length;
+
+        elSelectAll.disabled = total === 0;
+        elSelectAll.checked = total > 0 && picked === total;
+        // 三态：部分选中
+        elSelectAll.indeterminate = picked > 0 && picked < total;
+    }
+
+    // isInteractive 判断事件目标是否为交互控件（复选框/按钮/链接）。
+    //
+    // 统一用 closest 判定，避免直接引用变量导致块级作用域问题
+    // （历史 bug：const hideBtn 声明在 if 块内，块外引用抛 ReferenceError，
+    //   导致单击任何行都无响应）。
+    function isInteractive(target) {
+        return !!(target && target.closest && target.closest('input, button, a, .row-action'));
+    }
+
+    // findNodeByID 从节点列表中按 ID 查找条目。
+    function findNodeByID(side, id) {
+        const nodes = side === 'left' ? leftNodes : rightNodes;
+        return nodes.find(n => n.id === id) || null;
+    }
+
+    function renderList(side) {
+        const isLeft = side === 'left';
+        const nodes = isLeft ? leftNodes : rightNodes;
+        const path = isLeft ? leftCurrentPath : rightCurrentPath;
+        const container = isLeft ? elLeftList : elRightList;
+        const pathEl = isLeft ? elLeftPath : elRightPath;
+        const backBtn = isLeft ? elBtnBackLeft : elBtnBackRight;
+        const root = isLeft ? leftRoot : rightRoot;
+        const focus = isLeft ? leftFocus : rightFocus;
+
+        pathEl.innerText = path ? `${root}/${path}` : (root || '加载中...');
+        backBtn.style.display = path ? 'block' : 'none';
+
+        const items = nodes.filter(n => n.path === path);
+
+        // 一次性生成 DOM 片段后整体替换，避免增量 patch 造成状态漂移
+        const frag = document.createDocumentFragment();
+
+        if (items.length === 0) {
+            const empty = document.createElement('div');
+            empty.style.cssText = 'padding:20px; text-align:center; color:#999;';
+            empty.innerText = '此目录为空';
+            frag.appendChild(empty);
+        }
+
+        items.forEach(item => {
+            const div = document.createElement('div');
+            // 行 DOM 只带 data-* 属性，不持有业务对象（避免闭包捕获过期引用）
+            div.dataset.id = item.id;
+            div.dataset.type = item.type;
+            div.dataset.name = item.name;
+            div.dataset.path = item.path || '';
+            div.tabIndex = 0;
+            div.className = `list-item ${item.type === 'folder' ? 'is-folder' : (item.type === 'mod' ? 'is-mod' : (item.type === 'hidden' ? 'is-hidden' : 'is-card'))}`;
+            // 焦点行高亮（浅蓝底）
+            if (focus && focus.id === item.id) {
+                div.classList.add('is-focused');
+            }
+
+            // 复选框：所有类型都可勾选
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'row-check';
+            cb.checked = isItemSelected(side, item);
+            div.appendChild(cb);
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'name';
+            // 隐藏的文件夹与普通文件夹使用完全相同的图标（§3.5）
+            const icon = item.type === 'folder' || item.type === 'hidden' ? '📁'
+                       : item.type === 'mod' ? '📦'
+                       : '🖼️';
+            nameSpan.innerText = `${icon} ${item.name}`;
+            div.appendChild(nameSpan);
+
+            if (item.type === 'folder') {
+                // 文件夹右侧的隐藏按钮（眼睛带斜杠）
+                const hideBtn = document.createElement('button');
+                hideBtn.className = 'btn-hide-folder row-action';
+                hideBtn.dataset.action = 'hide';
+                hideBtn.title = '隐藏该空文件夹';
+                hideBtn.innerHTML = '🚫👁';
+                div.appendChild(hideBtn);
+            } else if (item.type === 'hidden') {
+                // 隐藏项用灰色小标签区分，不靠图标
+                const tag = document.createElement('span');
+                tag.className = 'hidden-tag';
+                tag.innerText = '已隐藏';
+                div.appendChild(tag);
+            } else if (item.size) {
+                const sizeSpan = document.createElement('span');
+                sizeSpan.className = 'size';
+                sizeSpan.innerText = formatSize(item.size);
+                div.appendChild(sizeSpan);
+            }
+
+            frag.appendChild(div);
+        });
+
+        container.replaceChildren(frag);
+        syncSelectAll(side);
+    }
+
+    // setFocusByID 按 ID 设置焦点（事件委托下的唯一入口）。
+    function setFocusByID(side, id) {
+        const item = findNodeByID(side, id);
+        if (!item) return;
+        if (side === 'left') {
+            leftFocus = item;
+        } else {
+            rightFocus = item;
+        }
+        updatePreview(item);
+        renderList(side);
+    }
+
+    function renderAll() {
+        renderList('left');
+        renderList('right');
+    }
+
+    // ---------------------------------------------------------------------
+    // 数据加载
+    // ---------------------------------------------------------------------
+
+    async function loadLeft() {
+        let res;
+        if (currentMode === 'zipmod') {
+            // zipmod 模式：左侧展示 mods 目录中已安装的 zipmod
+            res = await callBackend('GetInstalledModsData');
+        } else if (currentMode === 'invisible') {
+            res = await callBackend('GetInvisibleTreeData');
+            if (res.success) {
+                const d = res.data || {};
+                leftNodes = (d.left && d.left.nodes) || [];
+                leftRoot = (d.left && d.left.root) || '';
+                renderList('left');
+                return;
+            }
+        } else {
+            res = await callBackend('GetLeftTreeData', currentMode);
+        }
+        if (!res.success) {
+            log(res.message || '加载左侧列表失败。', 'err');
+            leftNodes = []; leftRoot = '';
+            renderList('left');
+            return;
+        }
+        const data = res.data || {};
+        leftNodes = data.nodes || [];
+        leftRoot = data.root || '';
+        renderList('left');
+    }
+
+    async function loadRight() {
+        let res;
+        if (currentMode === 'zipmod') {
+            res = await callBackend('GetModsTreeData');
+        } else if (currentMode === 'invisible') {
+            res = await callBackend('GetInvisibleTreeData');
+            if (res.success) {
+                const d = res.data || {};
+                rightNodes = (d.right && d.right.nodes) || [];
+                rightRoot = (d.right && d.right.root) || '';
+                renderList('right');
+                return;
+            }
+        } else {
+            res = await callBackend('GetRightTreeData', currentMode);
+        }
+        if (!res.success) {
+            log(res.message || '加载右侧列表失败。', 'err');
+            rightNodes = []; rightRoot = '';
+            renderList('right');
+            return;
+        }
+        const data = res.data || {};
+        rightNodes = data.nodes || [];
+        rightRoot = data.root || '';
+        renderList('right');
+    }
+
+    async function refreshAll() {
+        await Promise.all([loadLeft(), loadRight()]);
+    }
+
+    // ---------------------------------------------------------------------
+    // 隔离 / 恢复
+    // ---------------------------------------------------------------------
+
+    // ---------------------------------------------------------------------
+    // 列表事件委托
+    //
+    // 每个列表容器只绑定这几个监听器，不给每一行绑事件。
+    // 行 DOM 只带 data-id，交互时按 id 回查状态对象，
+    // 避免闭包捕获已过期的对象。
+    // ---------------------------------------------------------------------
+
+    function bindListEvents(side) {
+        const list = side === 'left' ? elLeftList : elRightList;
+
+        // 单击：切换焦点（不改勾选）
+        list.addEventListener('click', (e) => {
+            const row = e.target.closest('.list-item');
+            if (!row) return;
+
+            // 隐藏按钮：独立处理
+            const actionBtn = e.target.closest('[data-action="hide"]');
+            if (actionBtn) {
+                e.stopPropagation();
+                const item = findNodeByID(side, row.dataset.id);
+                if (item) hideFolder(item, side);
+                return;
+            }
+
+            // 复选框：改勾选（不改焦点）
+            if (e.target.closest('input[type="checkbox"]')) {
+                const item = findNodeByID(side, row.dataset.id);
+                if (item) {
+                    setItemSelected(side, item, e.target.checked);
+                    renderList(side);
+                }
+                return;
+            }
+
+            // 其它交互控件不触发焦点切换
+            if (isInteractive(e.target)) return;
+
+            setFocusByID(side, row.dataset.id);
+        });
+
+        // 双击：文件夹进入
+        list.addEventListener('dblclick', (e) => {
+            const row = e.target.closest('.list-item');
+            if (!row) return;
+            if (isInteractive(e.target)) return;
+            if (row.dataset.type !== 'folder') return;
+            const curPath = side === 'left' ? leftCurrentPath : rightCurrentPath;
+            const newPath = curPath ? `${curPath}/${row.dataset.name}` : row.dataset.name;
+            if (side === 'left') leftCurrentPath = newPath;
+            else rightCurrentPath = newPath;
+            renderList(side);
+        });
+
+        // 右键：打开菜单
+        list.addEventListener('contextmenu', (e) => {
+            const row = e.target.closest('.list-item');
+            if (!row) {
+                hideContextMenu();
+                return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            const item = findNodeByID(side, row.dataset.id);
+            if (!item) return;
+            setFocusByID(side, row.dataset.id);
+            showContextMenu(e.clientX, e.clientY, side, item);
+        });
+
+        // 键盘：空格切换勾选
+        list.addEventListener('keydown', (e) => {
+            const row = e.target.closest('.list-item');
+            if (!row) return;
+            if (e.key === ' ' || e.key === 'Spacebar') {
+                e.preventDefault();
+                const item = findNodeByID(side, row.dataset.id);
+                if (!item) return;
+                const next = !isItemSelected(side, item);
+                setItemSelected(side, item, next);
+                renderList(side);
+            }
+        });
+
+        // 滚动时收起菜单
+        list.addEventListener('scroll', hideContextMenu, true);
+    }
+
+    // ---------------------------------------------------------------------
+    // 右键菜单
+    // ---------------------------------------------------------------------
+
+    // showContextMenu 显示右键菜单。
+    //
+    // 自由修改模式：复制 / 剪切 / 粘贴
+    // 安全加载隔离模式：左侧为「隔离」，右侧为「启用」
+    function showContextMenu(x, y, side, item) {
+        elContextMenu.innerHTML = '';
+        const isFree = opMode === 'free';
+
+        const addItem = (label, handler, disabled) => {
+            const mi = document.createElement('div');
+            mi.className = 'menu-item' + (disabled ? ' disabled' : '');
+            mi.innerText = label;
+            if (!disabled) {
+                mi.onclick = () => {
+                    hideContextMenu();
+                    handler();
+                };
+            }
+            elContextMenu.appendChild(mi);
+        };
+        const addSep = () => {
+            const sep = document.createElement('div');
+            sep.className = 'menu-sep';
+            elContextMenu.appendChild(sep);
+        };
+
+        if (isFree) {
+            // 自由修改模式：复制 / 剪切 / 粘贴
+            addItem('复制', () => doCopy(side));
+            addItem('剪切', () => doCut(side));
+            addSep();
+            addItem('粘贴到此处', () => doPaste(side), !clipboardHasContent());
+            addSep();
+            if (item && item.type === 'folder') {
+                addItem('隐藏该空文件夹', () => hideFolder(item, side));
+            }
+        } else {
+            // 安全加载隔离模式
+            if (side === 'left') {
+                addItem('隔离', () => isolateSelection());
+            } else {
+                addItem('启用', () => restoreSelection());
+            }
+            if (item && item.type === 'folder') {
+                addSep();
+                addItem('隐藏该空文件夹', () => hideFolder(item, side));
+            }
+        }
+
+        elContextMenu.classList.add('show');
+        // 防止菜单超出窗口
+        const rect = elContextMenu.getBoundingClientRect();
+        const px = Math.min(x, window.innerWidth - rect.width - 8);
+        const py = Math.min(y, window.innerHeight - rect.height - 8);
+        elContextMenu.style.left = px + 'px';
+        elContextMenu.style.top = py + 'px';
+    }
+
+    function hideContextMenu() {
+        elContextMenu.classList.remove('show');
+    }
+
+    // 菜单关闭：只在「按下的目标既不是菜单、也不是列表行」时关闭。
+    //
+    // 历史 bug：document 级 contextmenu 监听与行级 oncontextmenu 打架 ——
+    // 行 handler 打开菜单后事件继续冒泡到 document，被立刻 hideContextMenu()，
+    // 表现为「菜单一闪就消失」。
+    // 修法：改用捕获阶段的 pointerdown，并排除菜单与行本身。
+    document.addEventListener('pointerdown', (e) => {
+        if (e.target.closest && e.target.closest('.context-menu')) return;
+        if (e.target.closest && e.target.closest('.list-item')) return;
+        hideContextMenu();
+    }, true);
+    window.addEventListener('blur', hideContextMenu);
+    window.addEventListener('resize', hideContextMenu);
+
+    // ---------------------------------------------------------------------
+    // 复制 / 剪切 / 粘贴（自由修改模式）
+    // ---------------------------------------------------------------------
+
+    let clipboardState = { op: '', paths: [] };
+
+    function clipboardHasContent() {
+        return clipboardState && clipboardState.op && clipboardState.paths && clipboardState.paths.length > 0;
+    }
+
+    // sideToBackend 把前端侧别映射为后端常量。
+    function sideToBackend(side) {
+        return side === 'left' ? 'kks' : 'del';
+    }
+
+    async function doCopy(side) {
+        const paths = Array.from(side === 'left' ? leftSelected : rightSelected);
+        if (paths.length === 0) {
+            log('请先勾选要复制的条目。', 'warn');
+            return;
+        }
+        const res = await callBackend('SetClipboard', 'copy', paths, sideToBackend(side), currentMode);
+        if (!res.success) {
+            log(res.message || '复制失败。', 'err');
+            return;
+        }
+        clipboardState = res.data || { op: 'copy', paths };
+        log(res.message || '已复制。', 'success');
+        updateClipHints();
+    }
+
+    async function doCut(side) {
+        const paths = Array.from(side === 'left' ? leftSelected : rightSelected);
+        if (paths.length === 0) {
+            log('请先勾选要剪切的条目。', 'warn');
+            return;
+        }
+        const res = await callBackend('SetClipboard', 'cut', paths, sideToBackend(side), currentMode);
+        if (!res.success) {
+            log(res.message || '剪切失败。', 'err');
+            return;
+        }
+        clipboardState = res.data || { op: 'cut', paths };
+        log(res.message || '已剪切。', 'success');
+        updateClipHints();
+    }
+
+    // doPaste 粘贴到当前焦点所在的目录。
+    //
+    // 目标目录 = 焦点文件夹本身（焦点在文件夹上时，粘贴到该文件夹内），
+    // 若焦点不在文件夹上，则粘贴到当前浏览的目录。
+    async function doPaste(side) {
+        if (!clipboardHasContent()) {
+            log('剪贴板为空。', 'warn');
+            return;
+        }
+        const focus = side === 'left' ? leftFocus : rightFocus;
+        const nodes = side === 'left' ? leftNodes : rightNodes;
+        const curPath = side === 'left' ? leftCurrentPath : rightCurrentPath;
+
+        let targetDir = null;
+        if (focus && focus.type === 'folder') {
+            targetDir = focus.id;
+        } else {
+            // 找到当前目录对应的绝对路径
+            const root = side === 'left' ? leftRoot : rightRoot;
+            targetDir = curPath ? root + '/' + curPath : root;
+            // 兜底：用当前目录下的任一节点推导
+            const anyNode = nodes.find(n => n.path === curPath);
+            if (anyNode) {
+                targetDir = curPath ? anyNode.id.substring(0, anyNode.id.length - anyNode.name.length - 1) : root;
+            }
+        }
+        if (!targetDir) {
+            log('无法确定粘贴目标目录，请先双击进入一个文件夹。', 'warn');
+            return;
+        }
+
+        const res = await callBackend('PasteClipboard', targetDir, sideToBackend(side), currentMode);
+        if (!res.success) {
+            log(res.message || '粘贴失败。', 'err');
+            return;
+        }
+        const result = res.data || {};
+        renderLogs(result.logs);
+        if (result.failedCount > 0) {
+            log('粘贴存在失败项，请查看日志。', 'warn');
+        } else {
+            log(res.message || '粘贴完成。', 'success');
+        }
+        if (result.op === 'cut' || clipboardState.op === 'cut') {
+            clipboardState = { op: '', paths: [] };
+        }
+        updateClipHints();
+        await refreshAll();
+    }
+
+    function updateClipHints() {
+        const state = clipboardHasContent()
+            ? `剪贴板: ${clipboardState.op === 'cut' ? '剪切' : '复制'} ${clipboardState.paths.length} 项`
+            : '剪贴板为空';
+        document.getElementById('clip-hint-left').innerText = state;
+        document.getElementById('clip-hint-right').innerText = state;
+        document.getElementById('btn-paste-left').disabled = !clipboardHasContent();
+        document.getElementById('btn-paste-right').disabled = !clipboardHasContent();
+    }
+
+    // ---------------------------------------------------------------------
+    // 隐藏空文件夹
+    // ---------------------------------------------------------------------
+
+    async function hideFolder(item, side) {
+        if (!item || item.type !== 'folder') {
+            log('只能隐藏文件夹。', 'warn');
+            return;
+        }
+        const res = await callBackend('HideFolders', [item.id], sideToBackend(side));
+        if (!res.success) {
+            log(res.message || '隐藏失败。', 'err');
+            return;
+        }
+        const result = res.data || {};
+        renderLogs(result.logs);
+        log(res.message || '隐藏完成。', 'success');
+        await refreshAll();
+    }
+
+    // restoreHiddenFolders 恢复被隐藏的文件夹。
+    async function restoreHiddenFolders() {
+        if (leftSelected.size === 0) {
+            log('请先勾选要恢复的隐藏文件夹。', 'warn');
+            return;
+        }
+        // 传相对路径（索引 key），后端也会做归一化兜底
+        const paths = Array.from(leftSelected).map(id => {
+            const node = findNodeByID('left', id);
+            return (node && node.rel) ? node.rel : id;
+        });
+        const res = await callBackend('RestoreInvisibleFolders', paths);
+        if (!res.success) {
+            log(res.message || '恢复失败。', 'err');
+            return;
+        }
+        const result = res.data || {};
+        renderLogs(result.logs);
+        log(res.message || '恢复完成。', 'success');
+        leftSelected.clear();
+        await refreshAll();
+    }
+
+    function renderLogs(logs) {
+        (logs || []).forEach(entry => {
+            const level = entry.level || 'info';
+            const type = level === 'success' ? 'success'
+                       : level === 'warn' ? 'warn'
+                       : level === 'error' ? 'err'
+                       : 'info';
+            log(entry.message, type);
+        });
+    }
+
+    // isolateSelection 执行隔离（左侧栏选中项 -> 隔离区）。
+    async function isolateSelection() {
+        if (leftSelected.size === 0) return log('请先在左侧勾选要隔离的文件。', 'warn');
+        if (currentMode === 'zipmod') return log('Zipmod 模式为只读视图，无法执行隔离。', 'warn');
+        if (currentMode === 'invisible') return log('隐藏的文件夹模式不支持隔离。', 'warn');
+
+        const paths = Array.from(leftSelected);
+        log(`--- 开始隔离操作 (${paths.length} 个条目) ---`);
+
+        const res = await callBackend('ExecuteIsolate', paths, currentMode);
+        if (!res.success) {
+            log(res.message || '隔离操作失败。', 'err');
+            return;
+        }
+        const result = res.data || {};
+        renderLogs(result.logs);
+        log(`隔离完成：资源 ${result.movedCards || 0} 个，MOD ${result.movedMods || 0} 个，保留 MOD ${result.keptMods || 0} 个。`, 'success');
+
+        leftSelected.clear();
+        clearPreview();
+        leftFocus = null;
+        await refreshAll();
+    }
+
+    // restoreSelection 执行恢复（右侧栏选中项 -> 游戏目录）。
+    async function restoreSelection() {
+        if (rightSelected.size === 0) return log('请先在右侧勾选要恢复的文件。', 'warn');
+        if (currentMode === 'invisible') return log('隐藏的文件夹模式请使用「恢复隐藏文件夹」按钮。', 'warn');
+
+        const paths = Array.from(rightSelected);
+        log(`--- 开始恢复操作 (${paths.length} 个条目) ---`);
+
+        const res = await callBackend('ExecuteRestore', paths, currentMode);
+        if (!res.success) {
+            log(res.message || '恢复操作失败。', 'err');
+            return;
+        }
+        const result = res.data || {};
+        renderLogs(result.logs);
+        log(`恢复完成：资源 ${result.restoredCards || 0} 个，MOD ${result.restoredMods || 0} 个。`, 'success');
+
+        rightSelected.clear();
+        clearPreview();
+        rightFocus = null;
+        await refreshAll();
+    }
+
+    document.getElementById('btn-exec-left').onclick = isolateSelection;
+    document.getElementById('btn-exec-right').onclick = restoreSelection;
+    document.getElementById('btn-restore-hidden').onclick = restoreHiddenFolders;
+
+    // 剪贴板工具条按钮
+    document.getElementById('btn-copy-left').onclick = () => doCopy('left');
+    document.getElementById('btn-cut-left').onclick = () => doCut('left');
+    document.getElementById('btn-paste-left').onclick = () => doPaste('left');
+    document.getElementById('btn-copy-right').onclick = () => doCopy('right');
+    document.getElementById('btn-cut-right').onclick = () => doCut('right');
+    document.getElementById('btn-paste-right').onclick = () => doPaste('right');
+
+    // ---------------------------------------------------------------------
+    // UI 交互
+    // ---------------------------------------------------------------------
+
+    document.getElementById('mode-select').onchange = (e) => {
+        currentMode = e.target.value;
+        leftCurrentPath = ''; rightCurrentPath = '';
+        leftSelected.clear(); rightSelected.clear();
+        leftFocus = null; rightFocus = null;
+        clearPreview();
+        syncModeButtons();
+        renderAll();
+        refreshAll();
+        log(`已切换至模式: ${modeLabels[currentMode] || currentMode}`);
+    };
+
+    document.getElementById('btn-reset').onclick = () => {
+        leftSelected.clear(); rightSelected.clear();
+        leftFocus = null; rightFocus = null;
+        clearPreview();
+        renderAll();
+        log('已清除所有勾选。');
+    };
+
+    // 全选：包含当前目录下的文件夹与文件（文件夹会级联勾选其子级）
+    elSelectAllLeft.onchange = (e) => {
+        const items = leftNodes.filter(n => n.path === leftCurrentPath);
+        items.forEach(n => setItemSelected('left', n, e.target.checked));
+        renderList('left');
+    };
+
+    elSelectAllRight.onchange = (e) => {
+        const items = rightNodes.filter(n => n.path === rightCurrentPath);
+        items.forEach(n => setItemSelected('right', n, e.target.checked));
+        renderList('right');
+    };
+
+    elBtnBackLeft.onclick = () => {
+        const parts = leftCurrentPath.split('/');
+        parts.pop();
+        leftCurrentPath = parts.join('/');
+        renderList('left');
+    };
+
+    elBtnBackRight.onclick = () => {
+        const parts = rightCurrentPath.split('/');
+        parts.pop();
+        rightCurrentPath = parts.join('/');
+        renderList('right');
+    };
+
+    // 选择 KKS 根目录
+    document.getElementById('btn-select-root').onclick = async () => {
+        setStatus('loading', '正在加载', 0);
+        const res = await callBackend('SelectKKSRoot');
+        if (!res.success) {
+            // 用户取消选择：回到未选择状态
+            setStatus('idle', '未选择路径');
+            log(res.message || '选择目录失败。', 'err');
+            return;
+        }
+
+        const data = res.data || {};
+        if (data.valid === false) {
+            // 目录结构不符合预设：加载错误，进度条中止变黄
+            setStatus('error', '加载错误');
+            log(res.message || '加载错误：目录结构不符合预设。', 'err');
+            if (data.missing && data.missing.length) {
+                log('缺少必需的目录: ' + data.missing.join('、'), 'err');
+            }
+            return;
+        }
+
+        kksReady = true;
+        elRootLabel.innerText = `KKS: ${data.kksRoot || ''}  |  隔离区: ${data.delCardsRoot || ''}`;
+        elRootLabel.title = `KKS: ${data.kksRoot || ''}\n隔离区: ${data.delCardsRoot || ''}`;
+        log(res.message || '已选择 KKS 根目录。', 'success');
+        setStatus('loading', '正在加载', 0);
+        await refreshAll();
+    };
+
+    // 重新扫描（重建全局依赖图）
+    document.getElementById('btn-switch-mode').onclick = async () => {
+        if (!kksReady) {
+            log('请先选择 KKS 根目录。', 'warn');
+            return;
+        }
+        setStatus('loading', '正在加载', 0);
+        log('触发重新扫描...');
+
+        const res = await callBackend('Rescan');
+        if (!res.success) {
+            setStatus('error', '加载错误');
+            log(res.message || '重新扫描失败。', 'err');
+            return;
+        }
+        const data = res.data || {};
+        if (data.valid === false) {
+            setStatus('error', '加载错误');
+            log(res.message || '加载错误：目录结构不符合预设。', 'err');
+            if (data.missing && data.missing.length) {
+                log('缺少必需的目录: ' + data.missing.join('、'), 'err');
+            }
+            return;
+        }
+        log(res.message || '已触发重新扫描。', 'success');
+        await refreshAll();
+    };
+
+    // 监听后端扫描事件
+    function bindEvents() {
+        if (!window.runtime || !window.runtime.EventsOn) return;
+        window.runtime.EventsOn('scan:progress', (e) => {
+            const d = e && e.payload ? e.payload : e;
+            const total = d.total || 0;
+            const done = d.done || 0;
+            // zipmod 与资源两个阶段各占一半进度
+            const base = d.phase === 'resource' ? 50 : 0;
+            const span = d.phase === 'resource' ? 50 : 50;
+            const percent = total > 0 ? base + (done / total) * span : base;
+            const phaseText = d.phase === 'resource' ? '正在扫描资源文件' : '正在索引 zipmod';
+            setStatus('loading', `正在加载 · ${phaseText} (${done}/${total})`, percent);
+        });
+        window.runtime.EventsOn('scan:done', (e) => {
+            const d = e && e.payload ? e.payload : e;
+            if (d.success === false) {
+                setStatus('error', '加载错误');
+                log(d.message || '加载错误。', 'err');
+                return;
+            }
+            setStatus('done', d.message || '扫描完成');
+            log(d.message || '扫描完成。', 'success');
+            refreshAll();
+        });
+        window.runtime.EventsOn('scan:complete', (e) => {
+            const d = e && e.payload ? e.payload : e;
+            if (d.missingMods && d.missingMods.length) {
+                log(`提示：本地缺失 ${d.missingMods.length} 个被引用的 zipmod。`, 'warn');
+            }
+        });
+    }
+
+    // 初始化
+    setStatus('idle', '未选择路径');
+    log('系统初始化完成。请点击顶部「选择 KKS 根目录」开始。', 'info');
+    bindEvents();
+    bindListEvents('left');
+    bindListEvents('right');
+    applyOpMode();
+    updateClipHints();
+    renderAll();
+</script>
+</body>
+</html>

@@ -1,0 +1,104 @@
+package main
+
+// concurrency_test.go —— 并发安全测试
+//
+// 验证后台扫描协程运行时，前端同时读取树数据不会出现数据竞争或 panic。
+
+import (
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+)
+
+func TestConcurrentScanAndTreeRead(t *testing.T) {
+	env := newTestEnv(t)
+	m := env.manager
+
+	// 构造一些资源文件
+	for i := 0; i < 20; i++ {
+		p := env.femaleCard(filepath.Join("dir", "card"+string(rune('a'+i%26))+".png"))
+		writeFile(t, p, "card")
+	}
+	for i := 0; i < 5; i++ {
+		p := filepath.Join(m.ModsDir(), "mod"+string(rune('a'+i))+".zipmod")
+		makeZipmod(t, p, "guid."+string(rune('a'+i)))
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// 后台：反复扫描（写依赖索引）
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.ScanAll(nil)
+			}
+		}
+	}()
+
+	// 前台：同时读取树数据
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.buildTree(m.SourceDir(ResourceKinds[0]), false)
+				m.buildTree(m.DelDir(ResourceKinds[0]), true)
+				m.buildModsTree(m.DelZipmodDir())
+			}
+		}
+	}()
+
+	// 触发一次实际隔离/恢复，验证写路径同样安全
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				card := env.femaleCard(filepath.Join("dir", "carda.png"))
+				if _, err := os.Stat(card); err == nil {
+					m.Isolate([]string{card})
+					m.Restore([]string{filepath.Join(m.DelDir(ResourceKinds[0]), "dir", "carda.png")})
+				}
+			}
+		}
+	}()
+
+	// 让并发跑一会儿
+	for i := 0; i < 200; i++ {
+		m.ScanAll(nil)
+	}
+	close(stop)
+	wg.Wait()
+}
+
+func TestConcurrentTreeReadOnly(t *testing.T) {
+	env := newTestEnv(t)
+	m := env.manager
+	writeFile(t, env.femaleCard("a.png"), "x")
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				m.buildTree(m.SourceDir(ResourceKinds[0]), false)
+				m.buildTree(m.DelDir(ResourceKinds[0]), true)
+			}
+		}()
+	}
+	wg.Wait()
+}

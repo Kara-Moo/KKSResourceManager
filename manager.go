@@ -1,0 +1,1015 @@
+package main
+
+// manager.go —— KKS 资源管理器核心
+//
+// 设计红线（对应需求中的“绝对不破坏全局依赖 / 绝对不破坏原有目录结构”）：
+//
+//  1. 隔离卡片时保留原始相对目录结构，先创建目标目录再移动文件；
+//     源目录即使变空也绝不删除。
+//  2. 只有当某个 GUID 在“移除被勾选文件的引用后”彻底无人引用时，才移动对应 zipmod；
+//     只要还有任何一个未勾选文件引用它，就原地保留。
+//  3. 恢复时把文件放回原位（目录不存在则重建）；DEL 区空目录可清理，游戏目录永不删除。
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+// ---------------------------------------------------------------------------
+// 常量与类型定义
+// ---------------------------------------------------------------------------
+
+// 资源类型标识。前端 mode-select 与后端保持一致。
+const (
+	ModeFemaleCard = "female_card"
+	ModeMaleCard   = "male_card"
+	ModeScene      = "scene"
+	ModePose       = "pose"
+	ModeCoordF     = "coord_f"
+	ModeCoordM     = "coord_m"
+	ModeZipmod     = "zipmod"
+)
+
+// ResourceKind 描述一种资源在游戏目录中的位置及其隔离区。
+type ResourceKind struct {
+	Mode string
+	// Name 中文显示名
+	Name string
+	// SourceRel 相对于 KKS_ROOT 的资源目录
+	SourceRel string
+	// DelName DELCARDS_ROOT 下的隔离目录名
+	DelName string
+	// FileExt 该类型资源的文件扩展名（小写，含点）
+	FileExt string
+}
+
+// ResourceKinds 是全部 6 种受管资源类型。
+// 顺序即前端下拉框顺序。
+// 注意：不含「工作室角色」(UserData/Studio/character) —— 该路径不参与扫描，
+// 也不创建对应的隔离目录。
+var ResourceKinds = []ResourceKind{
+	{ModeFemaleCard, "角色卡 (女)", filepath.Join("UserData", "chara", "female"), "DEL-female_card", ".png"},
+	{ModeMaleCard, "角色卡 (男)", filepath.Join("UserData", "chara", "male"), "DEL-male_card", ".png"},
+	{ModeScene, "场景卡", filepath.Join("UserData", "Studio", "scene"), "DEL-scene", ".png"},
+	{ModePose, "POSE 动作", filepath.Join("UserData", "Studio", "pose"), "DEL-pose", ".png"},
+	{ModeCoordF, "女性服装", filepath.Join("UserData", "coordinate", "female"), "DEL-coord_f", ".png"},
+	{ModeCoordM, "男性服装", filepath.Join("UserData", "coordinate", "male"), "DEL-coord_m", ".png"},
+}
+
+// zipmod 隔离目录（扁平化，不保留 mods 内部层级）
+const (
+	delZipmodDirName = "DEL-zipmod"
+	// delCardsDirName 隔离区根目录名，位于 KKS_ROOT 的父目录下
+	delCardsDirName = "DELCARDS"
+	// zipmodExt zipmod 文件扩展名
+	zipmodExt = ".zipmod"
+)
+
+// KindByMode 按 mode 取资源类型定义。
+func KindByMode(mode string) (ResourceKind, bool) {
+	for _, k := range ResourceKinds {
+		if k.Mode == mode {
+			return k, true
+		}
+	}
+	return ResourceKind{}, false
+}
+
+// ---------------------------------------------------------------------------
+// Manager
+// ---------------------------------------------------------------------------
+
+// Manager 持有全局扫描结果与隔离/恢复的核心状态。
+type Manager struct {
+	mu sync.RWMutex
+
+	// KksRoot 游戏根目录，例如 E:\KKV114
+	KksRoot string
+	// DelCardsRoot 隔离区根目录 = KKS_ROOT/../DELCARDS
+	DelCardsRoot string
+
+	// ZipmodDB GUID -> zipmod 绝对路径
+	ZipmodDB map[string]string
+	// GlobalDepMap GUID -> 引用该 GUID 的文件绝对路径列表
+	GlobalDepMap map[string][]string
+
+	// FileDeps 资源文件绝对路径 -> 该文件依赖的 GUID 列表
+	FileDeps map[string][]string
+	// DelFileDeps 隔离区文件绝对路径 -> 该文件依赖的 GUID 列表
+	DelFileDeps map[string][]string
+	// ModDeps zipmod 绝对路径 -> 该 zipmod 声明依赖的 GUID 列表
+	ModDeps map[string][]string
+
+	// Scanned 是否已完成一次全量扫描
+	Scanned bool
+
+	// clipboard 复制/剪切/粘贴剪贴板
+	clipboard *Clipboard
+	// invisible 空文件夹隐藏状态索引
+	invisible *InvisibleStore
+}
+
+// NewManager 创建 Manager 并初始化隔离区目录结构（只增不删）。
+func NewManager(kksRoot string) (*Manager, error) {
+	kksRoot = strings.TrimSpace(kksRoot)
+	if kksRoot == "" {
+		return nil, fmt.Errorf("KKS 根目录不能为空")
+	}
+	abs, err := filepath.Abs(kksRoot)
+	if err != nil {
+		return nil, fmt.Errorf("解析 KKS 根目录失败: %w", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, fmt.Errorf("无法访问 KKS 根目录: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("KKS 根目录不是文件夹: %s", abs)
+	}
+
+	parent := filepath.Dir(abs)
+	m := &Manager{
+		KksRoot:      abs,
+		DelCardsRoot: filepath.Join(parent, delCardsDirName),
+		ZipmodDB:     make(map[string]string),
+		GlobalDepMap: make(map[string][]string),
+		FileDeps:     make(map[string][]string),
+		DelFileDeps:  make(map[string][]string),
+		ModDeps:      make(map[string][]string),
+		clipboard:    &Clipboard{},
+	}
+	if err := m.EnsureDelDirs(); err != nil {
+		return nil, err
+	}
+	// 隐藏状态目录位于 DELCARDS 内，需在隔离目录创建后初始化
+	inv, err := NewInvisibleStore(m.DelCardsRoot, abs)
+	if err != nil {
+		return nil, err
+	}
+	m.invisible = inv
+	return m, nil
+}
+
+// EnsureDelDirs 创建隔离区及其全部子目录。已存在的目录不会受到影响。
+func (m *Manager) EnsureDelDirs() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ensureDelDirsLocked()
+}
+
+func (m *Manager) ensureDelDirsLocked() error {
+	if err := os.MkdirAll(m.DelCardsRoot, 0755); err != nil {
+		return fmt.Errorf("创建隔离区失败: %w", err)
+	}
+	names := make([]string, 0, len(ResourceKinds)+1)
+	for _, k := range ResourceKinds {
+		names = append(names, k.DelName)
+	}
+	names = append(names, delZipmodDirName)
+	for _, name := range names {
+		p := filepath.Join(m.DelCardsRoot, name)
+		if err := os.MkdirAll(p, 0755); err != nil {
+			return fmt.Errorf("创建隔离目录 %s 失败: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// ModsDir 返回游戏 mods 目录。
+func (m *Manager) ModsDir() string {
+	return filepath.Join(m.KksRoot, "mods")
+}
+
+// RequiredDirs 是扫描所必需、缺失即判定为「加载错误」的目录。
+//
+// 判定依据：这些目录承载了核心资源与 zipmod 索引，缺失说明选错了根目录。
+// 注意 coordinate/male 属于可选目录 —— 很多 KKS 安装根本没有男装资源库，
+// 其缺失只应导致该类型列表为空，而不应阻断整个程序。
+var RequiredDirs = []string{
+	filepath.Join("UserData", "chara", "female"),
+	filepath.Join("UserData", "chara", "male"),
+	filepath.Join("UserData", "Studio", "scene"),
+	filepath.Join("UserData", "Studio", "pose"),
+	filepath.Join("UserData", "coordinate", "female"),
+	"mods",
+}
+
+// ValidateRoot 校验 KKS 根目录结构是否满足扫描要求。
+//
+// 必须存在全部 RequiredDirs 目录，否则前端应提示「加载错误」
+// 而不是在一个错误的路径上做无意义的扫描。
+//
+// 返回缺失的必需目录列表；列表为空表示校验通过。
+func (m *Manager) ValidateRoot() (missing []string, err error) {
+	if m.KksRoot == "" {
+		return nil, fmt.Errorf("尚未选择 KKS 根目录")
+	}
+	info, statErr := os.Stat(m.KksRoot)
+	if statErr != nil {
+		return nil, fmt.Errorf("无法访问 KKS 根目录: %w", statErr)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("KKS 根目录不是文件夹: %s", m.KksRoot)
+	}
+
+	for _, rel := range RequiredDirs {
+		dir := filepath.Join(m.KksRoot, rel)
+		if stat, e := os.Stat(dir); e != nil || !stat.IsDir() {
+			missing = append(missing, rel)
+		}
+	}
+	return missing, nil
+}
+
+// SourceDir 返回指定类型的资源源目录。
+func (m *Manager) SourceDir(kind ResourceKind) string {
+	return filepath.Join(m.KksRoot, kind.SourceRel)
+}
+
+// DelDir 返回指定类型的隔离目录。
+func (m *Manager) DelDir(kind ResourceKind) string {
+	return filepath.Join(m.DelCardsRoot, kind.DelName)
+}
+
+// DelZipmodDir 返回 zipmod 隔离目录。
+func (m *Manager) DelZipmodDir() string {
+	return filepath.Join(m.DelCardsRoot, delZipmodDirName)
+}
+
+// ---------------------------------------------------------------------------
+// 全局扫描
+// ---------------------------------------------------------------------------
+
+// ScanResult 汇总一次全量扫描的结果。
+type ScanResult struct {
+	ZipmodCount    int
+	ResourceCount  int
+	DepGUIDCount   int
+	FailedFiles    int
+	FailedZipmods  int
+	MissingMods   []string
+	ScanDurationMS int64
+}
+
+// ScanAll 执行全量扫描：
+//   - 遍历 mods 下所有 zipmod，解析 manifest.xml 建立 GUID -> 路径索引；
+//   - 遍历 6 类资源目录下的所有资源文件，提取其依赖 GUID，构建全局依赖图。
+//
+// progress 回调会收到阶段名（zipmod / resource）、已完成数与总数，供前端渲染进度条。
+func (m *Manager) ScanAll(progress func(phase string, done, total int)) ScanResult {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	start := nowMS()
+	result := ScanResult{}
+
+	// --- 第一步：索引 mods 目录 ---
+	zipmodDB := make(map[string]string)
+	modDeps := make(map[string][]string)
+	failedZipmods := 0
+
+	modFiles := m.collectFiles(m.ModsDir(), func(path string) bool {
+		return strings.EqualFold(filepath.Ext(path), zipmodExt)
+	})
+
+	for i, path := range modFiles {
+		if progress != nil {
+			progress("zipmod", i+1, len(modFiles))
+		}
+		manifest, err := ReadModManifest(path)
+		guid := strings.TrimSpace(manifest.GUID)
+		if err != nil || guid == "" {
+			failedZipmods++
+			continue
+		}
+		// 同一 GUID 出现多个 zipmod 时保留第一个，避免误移动
+		if _, exists := zipmodDB[guid]; !exists {
+			zipmodDB[guid] = path
+		}
+		if deps := ReadModManifestDependencies(path); deps != nil {
+			modDeps[path] = deps
+		}
+	}
+
+	// --- 第二步：扫描资源文件，构建正向依赖索引 ---
+	// 反向图不在此构建，扫描结束后由 derive() 统一派生。
+	fileDeps := make(map[string][]string)
+	resourceCount := 0
+	failedFiles := 0
+
+	// 先统计资源文件总数，便于进度条按整体进度推进
+	resourceFiles := make([][]string, 0, len(ResourceKinds))
+	totalResources := 0
+	for _, kind := range ResourceKinds {
+		srcDir := m.SourceDir(kind)
+		files := m.collectFiles(srcDir, func(path string) bool {
+			return strings.EqualFold(filepath.Ext(path), kind.FileExt)
+		})
+		resourceFiles = append(resourceFiles, files)
+		totalResources += len(files)
+	}
+
+	processed := 0
+	for _, files := range resourceFiles {
+		for _, path := range files {
+			processed++
+			if progress != nil {
+				progress("resource", processed, totalResources)
+			}
+			resourceCount++
+			guids, err := ParseCardGUIDs(path)
+			if err != nil {
+				failedFiles++
+				guids = nil
+			}
+			if len(guids) == 0 {
+				continue
+			}
+			fileDeps[path] = guids
+		}
+	}
+
+	// --- 第三步：写入索引并派生反向图 ---
+	m.ZipmodDB = zipmodDB
+	m.ModDeps = modDeps
+	m.FileDeps = fileDeps
+	// 反向依赖图由正向数据现算（单一真源原则，见 derive.go）
+	m.rebuildDepIndex()
+
+	// --- 第四步：统计本地缺失的 mod ---
+	for guid := range m.GlobalDepMap {
+		if _, ok := m.ZipmodDB[guid]; !ok {
+			result.MissingMods = append(result.MissingMods, guid)
+		}
+	}
+	sort.Strings(result.MissingMods)
+
+	m.Scanned = true
+
+	result.ZipmodCount = len(zipmodDB)
+	result.ResourceCount = resourceCount
+	result.DepGUIDCount = len(m.GlobalDepMap)
+	result.FailedFiles = failedFiles
+	result.FailedZipmods = failedZipmods
+	result.ScanDurationMS = nowMS() - start
+	return result
+}
+
+// collectFiles 递归收集目录下所有满足过滤条件的文件。
+// 符号链接会被跳过，避免跟随链接跳出游戏目录。
+func (m *Manager) collectFiles(root string, keep func(path string) bool) []string {
+	var files []string
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			// 目录不存在等情况直接跳过
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if keep(path) {
+			files = append(files, path)
+		}
+		return nil
+	})
+	sort.Strings(files)
+	return files
+}
+
+// collectFilesStrict 递归收集目录下的文件，遇到读取错误时返回错误。
+//
+// 与 collectFiles 的区别：后者用于全量扫描，必须容忍个别坏文件；
+// 前者用于移动操作，任何读取失败都可能导致结构丢失，因此必须报错。
+func collectFilesStrict(root string, keep func(path string) bool) ([]string, error) {
+	var files []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if keep(path) {
+			files = append(files, path)
+		}
+		return nil
+	})
+	sort.Strings(files)
+	return files, err
+}
+
+// ---------------------------------------------------------------------------
+// 隔离
+// ---------------------------------------------------------------------------
+
+// OperationLog 记录一次操作的日志条目。
+type OperationLog struct {
+	Level   string `json:"level"` // info / success / warn / error
+	Message string `json:"message"`
+}
+
+// IsolateResult 隔离操作结果。
+type IsolateResult struct {
+	Success       bool          `json:"success"`
+	MovedCards    int           `json:"movedCards"`
+	MovedMods     int           `json:"movedMods"`
+	KeptMods      int           `json:"keptMods"`
+	FailedCount   int           `json:"failedCount"`
+	Logs          []OperationLog `json:"logs"`
+	GlobalDepSize int           `json:"globalDepSize"`
+}
+
+// Isolate 将选中的资源文件移动到隔离区，并按依赖图决定哪些 zipmod 可以一并移走。
+//
+// cardPaths 为资源文件的绝对路径集合。
+func (m *Manager) Isolate(cardPaths []string) IsolateResult {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	res := IsolateResult{Logs: make([]OperationLog, 0, 16)}
+
+	if len(cardPaths) == 0 {
+		res.Logs = append(res.Logs, OperationLog{"warn", "没有选中任何文件。"})
+		return res
+	}
+	if !m.Scanned {
+		res.Logs = append(res.Logs, OperationLog{"error", "尚未完成全局扫描，无法安全隔离。请先执行扫描。"})
+		return res
+	}
+
+	// --- 1. 校验每个待隔离条目，确定其所属类型 ---
+	// 条目可以是文件，也可以是文件夹。
+	// 文件夹会被展开为其下的全部文件（保持原有相对层级），
+	// 这样目录结构天然保留，依赖图的处理逻辑也可完全复用。
+	type movePlan struct {
+		src      string
+		kind     ResourceKind
+		relDir   string
+		dst      string
+		selected bool
+	}
+	plans := make([]movePlan, 0, len(cardPaths))
+	selectedSet := make(map[string]bool, len(cardPaths))
+
+	for _, src := range cardPaths {
+		kind, relDir, ok := m.classifyResource(src)
+		if !ok {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("跳过：%s 不属于任何受管资源目录。", src)})
+			continue
+		}
+
+		info, statErr := os.Stat(src)
+		if statErr != nil {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("无法访问 %s: %v", src, statErr)})
+			continue
+		}
+
+		if !info.IsDir() {
+			dst := filepath.Join(m.DelDir(kind), relDir, filepath.Base(src))
+			plans = append(plans, movePlan{src: src, kind: kind, relDir: relDir, dst: dst})
+			selectedSet[src] = true
+			continue
+		}
+
+		// 文件夹：展开为文件列表
+		files, err := collectFilesStrict(src, func(path string) bool {
+			return strings.EqualFold(filepath.Ext(path), kind.FileExt)
+		})
+		if err != nil {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("读取文件夹失败 %s: %v", src, err)})
+			continue
+		}
+		if len(files) == 0 {
+			// 空文件夹：仍然记录到隔离区（保留结构）
+			dstDir := filepath.Join(m.DelDir(kind), relDir, filepath.Base(src))
+			if err := os.MkdirAll(dstDir, 0755); err != nil {
+				res.FailedCount++
+				res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("创建目标目录失败 %s: %v", dstDir, err)})
+				continue
+			}
+			res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[移动空文件夹] %s -> %s", src, dstDir)})
+			continue
+		}
+		for _, f := range files {
+			_, fRelDir, _ := m.classifyResource(f)
+			dst := filepath.Join(m.DelDir(kind), fRelDir, filepath.Base(f))
+			plans = append(plans, movePlan{src: f, kind: kind, relDir: fRelDir, dst: dst})
+			selectedSet[f] = true
+		}
+	}
+
+	if len(plans) == 0 {
+		res.Logs = append(res.Logs, OperationLog{"error", "没有可隔离的有效文件。"})
+		return res
+	}
+
+	// --- 2. 收集被勾选文件依赖的 GUID ---
+	selectedGUIDs := make(map[string]bool)
+	for _, p := range plans {
+		for _, guid := range m.FileDeps[p.src] {
+			selectedGUIDs[guid] = true
+		}
+	}
+
+	// --- 3. 移动资源文件（保留目录结构） ---
+	for _, p := range plans {
+		// 目标父目录若曾被隐藏删除，先重建出来
+		if err := m.ensureTargetParent(p.dst); err != nil {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("创建目标目录失败 %s: %v", filepath.Dir(p.dst), err)})
+			continue
+		}
+		if _, err := os.Stat(p.dst); err == nil {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("目标已存在，跳过: %s", p.dst)})
+			continue
+		}
+		if err := moveFile(p.src, p.dst); err != nil {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("移动失败 %s -> %s: %v", p.src, p.dst, err)})
+			continue
+		}
+		res.MovedCards++
+		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[移动资源] %s -> %s", p.src, p.dst)})
+		// 记录隔离区内的依赖信息，供右侧预览使用；随后从全局依赖图移除该文件的引用
+		if deps, ok := m.FileDeps[p.src]; ok {
+			m.DelFileDeps[p.dst] = deps
+		}
+		m.removeDep(p.src)
+	}
+
+	// --- 4. 判定哪些 zipmod 可以安全移走 ---
+	// 关键：移除被勾选文件的引用后，若 GUID 仍被任何其它文件引用，则原地保留。
+	for guid := range selectedGUIDs {
+		modPath, ok := m.ZipmodDB[guid]
+		if !ok {
+			res.Logs = append(res.Logs, OperationLog{"info", fmt.Sprintf("[跳过 MOD] GUID %s 本地没有对应 zipmod。", guid)})
+			continue
+		}
+		// mod 本身是否已被移走
+		if _, statErr := os.Stat(modPath); statErr != nil {
+			continue
+		}
+		remaining := m.remainingReferrers(guid, selectedSet)
+		if len(remaining) > 0 {
+			res.KeptMods++
+			res.Logs = append(res.Logs, OperationLog{
+				"warn",
+				fmt.Sprintf("[保留 MOD] %s (GUID %s) 仍被 %d 个未勾选文件引用，例如: %s",
+					filepath.Base(modPath), guid, len(remaining), firstN(remaining, 3)),
+			})
+			continue
+		}
+		// 该 GUID 是否被其它 zipmod 依赖
+		if dependents := m.modDependents(guid); len(dependents) > 0 {
+			res.KeptMods++
+			res.Logs = append(res.Logs, OperationLog{
+				"warn",
+				fmt.Sprintf("[保留 MOD] %s (GUID %s) 仍被其它 zipmod 依赖: %s",
+					filepath.Base(modPath), guid, firstN(dependents, 3)),
+			})
+			continue
+		}
+
+		dst := filepath.Join(m.DelZipmodDir(), filepath.Base(modPath))
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("创建 zipmod 隔离目录失败: %v", err)})
+			continue
+		}
+		if _, err := os.Stat(dst); err == nil {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("[跳过 MOD] 隔离区已存在同名文件: %s", dst)})
+			continue
+		}
+		if err := moveFile(modPath, dst); err != nil {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("移动 zipmod 失败 %s: %v", modPath, err)})
+			continue
+		}
+		res.MovedMods++
+		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[移动 MOD] %s (GUID %s) -> %s", filepath.Base(modPath), guid, dst)})
+		delete(m.ZipmodDB, guid)
+	}
+
+	res.GlobalDepSize = len(m.GlobalDepMap)
+	res.Success = res.FailedCount == 0
+	if res.Success {
+		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("隔离完成：资源 %d 个，MOD %d 个，保留 MOD %d 个。", res.MovedCards, res.MovedMods, res.KeptMods)})
+	} else {
+		res.Logs = append(res.Logs, OperationLog{"warn", fmt.Sprintf("隔离结束，存在 %d 个失败项，请查看上方日志。", res.FailedCount)})
+	}
+	return res
+}
+
+// remainingReferrers 计算移除 selected 之后仍引用该 GUID 的文件列表。
+func (m *Manager) remainingReferrers(guid string, selected map[string]bool) []string {
+	var remaining []string
+	for _, ref := range m.GlobalDepMap[guid] {
+		if selected[ref] {
+			continue
+		}
+		remaining = append(remaining, ref)
+	}
+	return remaining
+}
+
+// modDependents 返回依赖该 GUID 的其它 zipmod 路径。
+func (m *Manager) modDependents(guid string) []string {
+	var dependents []string
+	for modPath, deps := range m.ModDeps {
+		for _, dep := range deps {
+			if dep == guid {
+				dependents = append(dependents, modPath)
+				break
+			}
+		}
+	}
+	sort.Strings(dependents)
+	return dependents
+}
+
+// removeDep 从正向索引中移除某个文件的全部引用。
+//
+// 注意：这里只删正向数据 FileDeps[path]，
+// 反向图 GlobalDepMap 由 derive() 现算，不需要也不应该在此增量修补
+// （历史缺陷 §3.6：增量 append 导致同一文件被移动 N 次后积累 N 条重复引用）。
+func (m *Manager) removeDep(path string) {
+	delete(m.FileDeps, path)
+}
+
+// classifyResource 判断一个文件属于哪种资源类型，并返回其在源目录下的相对路径。
+func (m *Manager) classifyResource(path string) (ResourceKind, string, bool) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ResourceKind{}, "", false
+	}
+	for _, kind := range ResourceKinds {
+		srcDir := m.SourceDir(kind)
+		rel, err := filepath.Rel(srcDir, abs)
+		if err != nil {
+			continue
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			continue
+		}
+		// rel 形如 sub\a\b\file.png，去掉文件名后即为相对目录
+		relDir := filepath.Dir(rel)
+		if relDir == "." {
+			relDir = ""
+		}
+		return kind, relDir, true
+	}
+	return ResourceKind{}, "", false
+}
+
+// ---------------------------------------------------------------------------
+// 恢复
+// ---------------------------------------------------------------------------
+
+// RestoreResult 恢复操作结果。
+type RestoreResult struct {
+	Success      bool           `json:"success"`
+	RestoredCard int            `json:"restoredCards"`
+	RestoredMod  int            `json:"restoredMods"`
+	FailedCount  int            `json:"failedCount"`
+	Logs         []OperationLog `json:"logs"`
+}
+
+// Restore 将隔离区中的文件移回游戏目录。
+//
+// cardPaths 为隔离区中文件的绝对路径集合（可能是资源文件，也可能是 zipmod）。
+func (m *Manager) Restore(cardPaths []string) RestoreResult {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	res := RestoreResult{Logs: make([]OperationLog, 0, 16)}
+
+	if len(cardPaths) == 0 {
+		res.Logs = append(res.Logs, OperationLog{"warn", "没有选中任何文件。"})
+		return res
+	}
+
+	for _, src := range cardPaths {
+		abs, err := filepath.Abs(src)
+		if err != nil {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("路径无效: %s", src)})
+			continue
+		}
+
+		// 区分 zipmod 与资源文件
+		if isUnder(abs, m.DelZipmodDir()) {
+			m.restoreZipmod(abs, &res)
+			continue
+		}
+
+		kind, relDir, ok := m.classifyDelResource(abs)
+		if !ok {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("跳过：%s 不属于隔离区中的受管资源。", abs)})
+			continue
+		}
+
+		// 文件夹：展开为文件列表后再逐个恢复，保持原有目录结构
+		if info, statErr := os.Stat(abs); statErr == nil && info.IsDir() {
+			files, err := collectFilesStrict(abs, func(path string) bool {
+				return strings.EqualFold(filepath.Ext(path), kind.FileExt)
+			})
+			if err != nil {
+				res.FailedCount++
+				res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("读取文件夹失败 %s: %v", abs, err)})
+				continue
+			}
+			if len(files) == 0 {
+				// 空文件夹：只重建目录
+				dstDir := filepath.Join(m.SourceDir(kind), relDir, filepath.Base(abs))
+				if err := m.ensureTargetParent(dstDir); err != nil {
+					res.FailedCount++
+					res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("重建目录失败 %s: %v", dstDir, err)})
+					continue
+				}
+				res.RestoredCard++
+				res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[恢复空文件夹] %s", dstDir)})
+				continue
+			}
+			for _, f := range files {
+				m.restoreSingleFile(f, kind, &res)
+			}
+			continue
+		}
+
+		m.restoreSingleFile(abs, kind, &res)
+	}
+
+	// 清理 DEL 区的空目录（仅隔离区，游戏目录永不删除）
+	if cleaned := m.cleanEmptyDirs(m.DelCardsRoot); cleaned > 0 {
+		res.Logs = append(res.Logs, OperationLog{"info", fmt.Sprintf("已清理隔离区空目录 %d 个。", cleaned)})
+	}
+
+	res.Success = res.FailedCount == 0
+	if res.Success {
+		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("恢复完成：资源 %d 个，MOD %d 个。", res.RestoredCard, res.RestoredMod)})
+	} else {
+		res.Logs = append(res.Logs, OperationLog{"warn", fmt.Sprintf("恢复结束，存在 %d 个失败项，请查看上方日志。", res.FailedCount)})
+	}
+	return res
+}
+
+// restoreSingleFile 把隔离区中的单个资源文件移回游戏原目录。
+//
+// 目标父目录若曾被隐藏删除，会先依据隐藏索引重建出来。
+func (m *Manager) restoreSingleFile(abs string, kind ResourceKind, res *RestoreResult) {
+	_, relDir, ok := m.classifyDelResource(abs)
+	if !ok {
+		res.FailedCount++
+		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("跳过：%s 不属于隔离区中的受管资源。", abs)})
+		return
+	}
+
+	dst := filepath.Join(m.SourceDir(kind), relDir, filepath.Base(abs))
+	if err := m.ensureTargetParent(dst); err != nil {
+		res.FailedCount++
+		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("重建原目录失败 %s: %v", filepath.Dir(dst), err)})
+		return
+	}
+	if _, err := os.Stat(dst); err == nil {
+		res.FailedCount++
+		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("目标已存在，跳过恢复: %s", dst)})
+		return
+	}
+	if err := moveFile(abs, dst); err != nil {
+		res.FailedCount++
+		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("恢复失败 %s -> %s: %v", abs, dst, err)})
+		return
+	}
+	res.RestoredCard++
+	res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[恢复资源] %s -> %s", abs, dst)})
+	// 把依赖关系写回**正向**索引
+	if deps, ok := m.DelFileDeps[abs]; ok {
+		m.FileDeps[dst] = deps
+		delete(m.DelFileDeps, abs)
+	}
+	// 反向图由正向数据派生
+	m.rebuildDepIndex()
+}
+
+// ensureTargetParent 确保目标文件的父目录存在。
+//
+// 若父目录此前被「隐藏」删除，则依据隐藏索引重建对应的目录树。
+func (m *Manager) ensureTargetParent(targetFile string) error {
+	parent := filepath.Dir(targetFile)
+	if info, err := os.Stat(parent); err == nil && info.IsDir() {
+		return nil
+	}
+	if m.invisible != nil {
+		rebuilt, err := m.invisible.EnsurePathForOperation(targetFile)
+		if err != nil {
+			return err
+		}
+		if rebuilt {
+			return nil
+		}
+	}
+	return os.MkdirAll(parent, 0755)
+}
+
+// restoreZipmod 将隔离区中的 zipmod 移回 mods 目录。
+func (m *Manager) restoreZipmod(src string, res *RestoreResult) {
+	modsDir := m.ModsDir()
+	if err := os.MkdirAll(modsDir, 0755); err != nil {
+		res.FailedCount++
+		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("创建 mods 目录失败: %v", err)})
+		return
+	}
+	dst := filepath.Join(modsDir, filepath.Base(src))
+	if _, err := os.Stat(dst); err == nil {
+		res.FailedCount++
+		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("mods 中已存在同名文件，跳过: %s", dst)})
+		return
+	}
+	if err := moveFile(src, dst); err != nil {
+		res.FailedCount++
+		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("恢复 zipmod 失败 %s: %v", src, err)})
+		return
+	}
+	res.RestoredMod++
+	res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[恢复 MOD] %s -> %s", src, dst)})
+}
+
+// classifyDelResource 判断隔离区中某个文件属于哪种资源类型及其相对目录。
+func (m *Manager) classifyDelResource(path string) (ResourceKind, string, bool) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ResourceKind{}, "", false
+	}
+	for _, kind := range ResourceKinds {
+		rel, err := filepath.Rel(m.DelDir(kind), abs)
+		if err != nil {
+			continue
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			continue
+		}
+		relDir := filepath.Dir(rel)
+		if relDir == "." {
+			relDir = ""
+		}
+		return kind, relDir, true
+	}
+	return ResourceKind{}, "", false
+}
+
+// cleanEmptyDirs 自底向上删除 root 下的空目录，返回清理数量。
+// 只作用于隔离区，绝不触碰游戏目录。
+//
+// 注意：8 个标准隔离子目录（DEL-female_card 等）本身必须始终保留，
+// 因此即使它们变空也不会被删除，只清理其内部的空目录。
+func (m *Manager) cleanEmptyDirs(root string) int {
+	// 保护标准子目录，避免被误删
+	protected := make(map[string]bool, len(ResourceKinds)+2)
+	for _, k := range ResourceKinds {
+		protected[filepath.Join(root, k.DelName)] = true
+	}
+	protected[filepath.Join(root, delZipmodDirName)] = true
+	// 隐藏状态目录内保存着 JSON 状态文件，绝不能被清理
+	protected[filepath.Join(root, invisibleDirName)] = true
+
+	cleaned := 0
+	var dirs []string
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || !info.IsDir() {
+			return nil
+		}
+		if path == root || protected[path] {
+			return nil
+		}
+		dirs = append(dirs, path)
+		return nil
+	})
+	// 深度优先：先删子目录
+	sort.Slice(dirs, func(i, j int) bool {
+		return len(dirs[i]) > len(dirs[j])
+	})
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		if len(entries) == 0 {
+			if err := os.Remove(dir); err == nil {
+				cleaned++
+			}
+		}
+	}
+	return cleaned
+}
+
+// ---------------------------------------------------------------------------
+// 文件移动
+// ---------------------------------------------------------------------------
+
+// moveFile 移动文件，优先使用 rename（同盘高效），
+// 跨设备时退化为“复制 -> 校验 -> 删除源文件”，且绝不覆盖已存在的目标。
+func moveFile(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return fmt.Errorf("目标文件已存在: %s", dst)
+	}
+
+	// 同盘 rename
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+
+	// 跨设备：复制后删除
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, srcInfo.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(dst)
+		return err
+	}
+	// 校验大小一致后再删除源文件
+	if dstInfo, err := os.Stat(dst); err == nil && dstInfo.Size() == srcInfo.Size() {
+		return os.Remove(src)
+	}
+	return fmt.Errorf("复制后文件大小不一致，已保留源文件")
+}
+
+func copyAll(dst *os.File, src *os.File) (int64, error) {
+	return io.Copy(dst, src)
+}
+
+// ---------------------------------------------------------------------------
+// 辅助
+// ---------------------------------------------------------------------------
+
+// isUnder 判断 path 是否位于 root 之内（含 root 本身）。
+func isUnder(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// firstN 返回列表的前 n 项并拼接为可读字符串。
+func firstN(list []string, n int) string {
+	if len(list) == 0 {
+		return ""
+	}
+	if len(list) < n {
+		n = len(list)
+	}
+	return strings.Join(list[:n], ", ")
+}
+
+// nowMS 返回当前 Unix 毫秒时间戳。
+func nowMS() int64 {
+	return time.Now().UnixNano() / int64(timeMillisecond)
+}
+
+// timeMillisecond 毫秒常量（避免直接引用 time 包造成命名冲突）。
+const timeMillisecond = 1000000

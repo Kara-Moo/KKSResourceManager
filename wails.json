@@ -1,0 +1,18 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "KKS Resource Manager",
+  "outputfilename": "KKSResourceManager",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "KKS Resource Manager"
+  },
+  "info": {
+    "companyName": "KKS Resource Manager",
+    "productName": "KKS Resource Manager",
+    "productVersion": "1.0.0",
+    "comments": "Koikatsu Sunshine 资源与 zipmod 依赖安全管理工具"
+  }
+}
