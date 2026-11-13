@@ -59,13 +59,14 @@ const hiddenTree = {
 const mockScript = `
 window.__calls = [];
 window.__thumbBatchCalls = [];
+window.__rightNodes = [];
 const mockApp = {
   GetLeftTreeData: (mode) => {
     window.__calls.push(['GetLeftTreeData', mode]);
     if (mode === 'invisible') return JSON.stringify({ success: true, message: '', data: ${JSON.stringify(hiddenTree)} });
     return JSON.stringify({ success: true, message: '', data: ${JSON.stringify(makeTreeData())} });
   },
-  GetRightTreeData: (mode) => JSON.stringify({ success: true, message: '', data: { mode, root: 'C:\\\\DEL', rootName: 'DEL', nodes: [] } }),
+  GetRightTreeData: (mode) => JSON.stringify({ success: true, message: '', data: { mode, root: 'C:\\\\DEL', rootName: 'DEL', nodes: window.__rightNodes || [] } }),
   GetInvisibleTreeData: () => JSON.stringify({ success: true, message: '', data: ${JSON.stringify(hiddenTree)} }),
   GetInstalledModsData: () => JSON.stringify({ success: true, message: '', data: { mode: 'zipmod', root: 'C:/KK/mods', rootName: 'mods', nodes: [
     { id: 'C:/KK/mods/used.zipmod', name: 'used.zipmod', type: 'mod', path: '', mods: ['g1'], modNames: ['used.zipmod'], size: 1024, guid: 'g1', refCount: 15, refCards: 14, refPlugins: 1 },
@@ -743,6 +744,88 @@ console.log('\n【20】FIX-03：zipmod 引用全量显示 + 懒加载');
   // 可视区先出图：首屏格子应有 img
   const imgs = await page.locator('#panel-sections .panel-cell img').count();
   check('可视区缩略图已补上', imgs >= 1, `实际 ${imgs} 个`);
+}
+
+
+console.log('\n【21】FIX-04：删除按钮自动择侧');
+{
+  await page.selectOption('#mode-select', 'female_card');
+  await page.waitForTimeout(400);
+  if (await page.evaluate(() => opMode) !== 'free') {
+    await page.locator('#btn-mode').click();
+    await page.waitForTimeout(300);
+  }
+
+  // 右侧注入两条隔离项
+  await page.evaluate(async () => {
+    window.__rightNodes = [
+      { id: 'C:/DEL/female_card/iso1.png', name: 'iso1.png', type: 'card', path: '', mods: [], modNames: [], size: 2048 },
+      { id: 'C:/DEL/female_card/iso2.png', name: 'iso2.png', type: 'card', path: '', mods: [], modNames: [], size: 4096 },
+    ];
+    leftSelected.clear();
+    rightSelected.clear();
+    await loadRight();
+  });
+  await page.waitForTimeout(400);
+
+  const rightRows = await page.locator('#right-list .list-item').count();
+  check('右侧已加载 2 条隔离项', rightRows === 2, `实际 ${rightRows} 行`);
+
+  let disabled = await page.locator('#btn-delete').isDisabled();
+  check('未勾选时删除按钮为禁用态', disabled);
+
+  // 勾选右侧 2 项
+  await page.locator('#right-list .list-item input[type=checkbox]').first().click();
+  await page.waitForTimeout(200);
+  await page.locator('#right-list .list-item input[type=checkbox]').nth(1).click();
+  await page.waitForTimeout(300);
+
+  disabled = await page.locator('#btn-delete').isDisabled();
+  check('勾选后删除按钮可用', !disabled);
+
+  const activeRight = await page.evaluate(() => document.getElementById('pane-right').classList.contains('is-active-side'));
+  check('最近交互侧标记在右侧', activeRight);
+
+  // 点删除 → 应出现确认框，而不是「请先勾选」
+  await page.locator('#btn-delete').click();
+  await page.waitForTimeout(600);
+
+  const modalShown = await page.locator('#modal-mask.show').count();
+  const body = modalShown ? await page.locator('#modal-body').innerText() : '';
+  check('右侧勾选后删除弹确认框', modalShown === 1, `弹窗=${modalShown}`);
+  check('确认框未出现「请先勾选」', !body.includes('请先勾选'), `实际 "${body}"`);
+  check('确认框显示 2 个项目', body.includes('2 个项目'), `实际 "${body}"`);
+
+  if (modalShown) {
+    await page.locator('#modal-foot button').first().click();
+    await page.waitForTimeout(300);
+  }
+
+  // 两侧都勾选 → 明确提示
+  await page.evaluate(async () => { await loadLeft(); });
+  await page.waitForTimeout(400);
+  await page.locator('#left-list .list-item input[type=checkbox]').first().click();
+  await page.waitForTimeout(300);
+
+  await page.locator('#btn-delete').click();
+  await page.waitForTimeout(600);
+
+  const conflictShown = await page.locator('#modal-mask.show').count();
+  const conflictBody = conflictShown ? await page.locator('#modal-body').innerText() : '';
+  check('两侧都勾选时明确提示', conflictShown === 1 && conflictBody.includes('都有勾选'), `实际 "${conflictBody}"`);
+
+  if (conflictShown) {
+    await page.locator('#modal-foot button').first().click();
+    await page.waitForTimeout(300);
+  }
+
+  // 清理勾选
+  await page.evaluate(() => {
+    leftSelected.clear();
+    rightSelected.clear();
+    window.__rightNodes = [];
+    renderAll();
+  });
 }
 
 await page.screenshot({ path: path.join(__dirname, '..', 'build', 'frontend-test.png'), fullPage: false });

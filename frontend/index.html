@@ -94,6 +94,10 @@
         }
         .ref-count.is-zero { color: var(--text-3); font-weight: 400; }
 
+        /* 当前操作侧提示（v2.2 FIX-04）：中列按钮作用于哪一侧 */
+        .list-panel.is-active-side { box-shadow: inset 0 0 0 2px var(--accent); }
+        button:disabled { opacity: .45; cursor: not-allowed; }
+
         /* inline 重命名输入框（§6.1） */
         .inline-rename {
             flex: 1; min-width: 0;
@@ -563,7 +567,7 @@
     </div>
 
     <div class="main-layout">
-        <div class="list-panel">
+        <div class="list-panel" id="pane-left">
             <div class="panel-header">
                 <input type="checkbox" id="select-all-left">
                 <div class="path-display" id="left-path">路径加载中...</div>
@@ -596,7 +600,7 @@
             <button class="btn-switch" id="btn-switch-mode">重新扫描</button>
         </div>
 
-        <div class="list-panel" style="flex: 1.5;">
+        <div class="list-panel" id="pane-right" style="flex: 1.5;">
             <div class="panel-header">
                 <input type="checkbox" id="select-all-right">
                 <div class="path-display" id="right-path">DEL 隔离区</div>
@@ -1605,6 +1609,8 @@
 
         container.replaceChildren(frag);
         syncSelectAll(side);
+        // 勾选数量变化会影响删除/重命名按钮可用性
+        syncCrudButtons();
     }
 
     function renderAll() {
@@ -1700,6 +1706,60 @@
     // 自由模式 CRUD（§6）
     // ---------------------------------------------------------------------
 
+    // ---------------------------------------------------------------------
+    // 最近交互侧（v2.2 FIX-04）
+    //
+    // 中列按钮是左右**共享**的。早前把它们写死成 'left'，
+    // 于是右侧勾选后点删除会提示「请先勾选」—— 而勾选框明明是勾上的。
+    // ---------------------------------------------------------------------
+
+    let activeSide = 'left';
+
+    // setActiveSide 记录用户最近操作的列表，并给出视觉提示。
+    function setActiveSide(side) {
+        if (side !== 'left' && side !== 'right') return;
+        if (activeSide === side) return;
+        activeSide = side;
+        const l = document.getElementById('pane-left');
+        const r = document.getElementById('pane-right');
+        if (l) l.classList.toggle('is-active-side', side === 'left');
+        if (r) r.classList.toggle('is-active-side', side === 'right');
+        syncCrudButtons();
+    }
+
+    // resolveOpSide 决定本次操作作用于哪一侧。
+    //
+    //  1. 两侧都勾选 → 明确报错（不合并，避免语义混乱）
+    //  2. 都没勾选   → 提示
+    //  3. 只有一侧有 → 用那一侧（用户意图明确）
+    function resolveOpSide() {
+        const L = leftSelected.size;
+        const R = rightSelected.size;
+        if (L > 0 && R > 0) {
+            showAlert('左右两侧都有勾选。请先取消其中一侧的勾选，再执行操作。');
+            return null;
+        }
+        if (L === 0 && R === 0) {
+            showAlert('请先勾选要操作的条目。');
+            return null;
+        }
+        return L > 0 ? 'left' : 'right';
+    }
+
+    // syncCrudButtons 同步删除/重命名按钮的可用状态。
+    //
+    // 目的是把「点了才骂你没勾选」变成「一开始就是灰的」。
+    function syncCrudButtons() {
+        const total = leftSelected.size + rightSelected.size;
+        const disabled = opMode !== 'free' || total === 0;
+        ['btn-delete', 'btn-rename'].forEach(id => {
+            const b = document.getElementById(id);
+            if (!b) return;
+            b.disabled = disabled;
+            b.title = disabled ? '请先勾选条目（自由修改模式）' : '';
+        });
+    }
+
     // applyModeButtons 按当前模式显示/隐藏操作按钮。
     //
     // §6：自由模式下这些按钮**不渲染**（不是禁用）；
@@ -1728,6 +1788,8 @@
         elBtnExecLeft.disabled = isTrash || isInvisible;
         elBtnExecRight.disabled = isTrash || isInvisible;
         elBtnRestoreHidden.style.display = isInvisible ? 'block' : 'none';
+
+        syncCrudButtons();
     }
 
     // doNewFolder 新建文件夹（创建 + 立即 inline 重命名，§6.1）。
@@ -1736,6 +1798,8 @@
             showAlert('自由修改模式下才能新建文件夹。');
             return;
         }
+        // 未指定侧时按勾选情况自动择侧（中列按钮共享）
+        side = side || activeSide;
         const curPath = side === 'left' ? leftCurrentPath : rightCurrentPath;
         const res = await callBackend('CmdMkdir', side, currentMode, curPath);
         if (!res.success) {
@@ -1813,6 +1877,8 @@
             showAlert('自由修改模式下才能重命名。');
             return;
         }
+        side = side || resolveOpSide();
+        if (!side) return;
         const focus = side === 'left' ? leftFocus : rightFocus;
         if (!focus) {
             showAlert('请先选中一个条目。');
@@ -1827,6 +1893,9 @@
             showAlert('安全加载隔离模式下没有删除入口。');
             return;
         }
+        // 不写死左侧：按勾选情况自动择侧（v2.2 FIX-04）
+        side = side || resolveOpSide();
+        if (!side) return;
         const selected = side === 'left' ? leftSelected : rightSelected;
         if (selected.size === 0) {
             showAlert('请先勾选要删除的条目。');
@@ -1921,9 +1990,9 @@
     }
 
     // 绑定自由模式按钮
-    document.getElementById('btn-new-folder').onclick = guard(() => doNewFolder('left'));
-    document.getElementById('btn-rename').onclick = guard(() => doRename('left'));
-    document.getElementById('btn-delete').onclick = guard(() => doDelete('left'));
+    document.getElementById('btn-new-folder').onclick = guard(() => doNewFolder());
+    document.getElementById('btn-rename').onclick = guard(() => doRename());
+    document.getElementById('btn-delete').onclick = guard(() => doDelete());
     document.getElementById('btn-trash-restore').onclick = guard(doTrashRestore);
     document.getElementById('btn-trash-purge').onclick = guard(doTrashPurge);
 
@@ -2407,6 +2476,11 @@
 
     function bindListEvents(side) {
         const list = side === 'left' ? elLeftList : elRightList;
+
+        // 任何一次点击/右键都先记录「最近操作的是哪一侧」，
+        // 中列共享按钮据此决定作用对象（v2.2 FIX-04）。
+        list.addEventListener('pointerdown', () => setActiveSide(side));
+        list.addEventListener('focusin', () => setActiveSide(side));
 
         // 单击：切换焦点（不改勾选）
         list.addEventListener('click', (e) => {
