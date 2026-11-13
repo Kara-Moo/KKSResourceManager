@@ -6,8 +6,28 @@ export function ClearClipboard() {
   return window['go']['main']['App']['ClearClipboard']();
 }
 
+export function CmdMkdir(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CmdMkdir'](arg1, arg2, arg3);
+}
+
+export function CmdRename(arg1, arg2) {
+  return window['go']['main']['App']['CmdRename'](arg1, arg2);
+}
+
+export function CmdTrashPurge(arg1, arg2) {
+  return window['go']['main']['App']['CmdTrashPurge'](arg1, arg2);
+}
+
+export function CmdTrashRestore(arg1) {
+  return window['go']['main']['App']['CmdTrashRestore'](arg1);
+}
+
 export function CmdUndo(arg1) {
   return window['go']['main']['App']['CmdUndo'](arg1);
+}
+
+export function CommitDelete(arg1) {
+  return window['go']['main']['App']['CommitDelete'](arg1);
 }
 
 export function ExecuteIsolate(arg1, arg2) {
@@ -78,6 +98,10 @@ export function GetThumbBatch(arg1) {
   return window['go']['main']['App']['GetThumbBatch'](arg1);
 }
 
+export function GetTrashTree() {
+  return window['go']['main']['App']['GetTrashTree']();
+}
+
 export function GetZipmodDetail(arg1) {
   return window['go']['main']['App']['GetZipmodDetail'](arg1);
 }
@@ -92,6 +116,10 @@ export function OpenDelCardsRoot() {
 
 export function PasteClipboard(arg1, arg2, arg3) {
   return window['go']['main']['App']['PasteClipboard'](arg1, arg2, arg3);
+}
+
+export function PlanDelete(arg1) {
+  return window['go']['main']['App']['PlanDelete'](arg1);
 }
 
 export function Rescan() {

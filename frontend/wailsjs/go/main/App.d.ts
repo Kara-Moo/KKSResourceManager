@@ -3,7 +3,17 @@
 
 export function ClearClipboard():Promise<string>;
 
+export function CmdMkdir(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function CmdRename(arg1:string,arg2:string):Promise<string>;
+
+export function CmdTrashPurge(arg1:Array<string>,arg2:string):Promise<string>;
+
+export function CmdTrashRestore(arg1:Array<string>):Promise<string>;
+
 export function CmdUndo(arg1:string):Promise<string>;
+
+export function CommitDelete(arg1:Array<string>):Promise<string>;
 
 export function ExecuteIsolate(arg1:Array<string>,arg2:string):Promise<string>;
 
@@ -39,6 +49,8 @@ export function GetScanStatus():Promise<string>;
 
 export function GetThumbBatch(arg1:Array<string>):Promise<string>;
 
+export function GetTrashTree():Promise<string>;
+
 export function GetZipmodDetail(arg1:string):Promise<string>;
 
 export function HideFolders(arg1:Array<string>,arg2:string):Promise<string>;
@@ -46,6 +58,8 @@ export function HideFolders(arg1:Array<string>,arg2:string):Promise<string>;
 export function OpenDelCardsRoot():Promise<string>;
 
 export function PasteClipboard(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function PlanDelete(arg1:Array<string>):Promise<string>;
 
 export function Rescan():Promise<string>;
 

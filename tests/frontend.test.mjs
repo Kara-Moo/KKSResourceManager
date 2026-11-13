@@ -101,6 +101,30 @@ const mockApp = {
     window.__calls.push(['CmdUndo', txId]);
     return JSON.stringify({ success: true, message: '已撤销', data: { ok: true, reverted: 3 } });
   },
+  CmdMkdir: (side, mode, parentRel) => {
+    window.__calls.push(['CmdMkdir', side, mode, parentRel]);
+    return JSON.stringify({ success: true, message: 'ok', data: { ok: true, name: '新建文件夹 (2)', rel: '新建文件夹 (2)', path: 'C:/KK/female/新建文件夹 (2)' } });
+  },
+  CmdRename: (pathAbs, newName) => {
+    window.__calls.push(['CmdRename', pathAbs, newName]);
+    if (newName.includes('/')) {
+      return JSON.stringify({ success: false, message: '名称不能包含以下字符：< > : " / \\ | ? *', data: { code: 'NAME_INVALID' } });
+    }
+    return JSON.stringify({ success: true, message: 'ok', data: { ok: true, name: newName, path: pathAbs } });
+  },
+  PlanDelete: (paths) => {
+    window.__calls.push(['PlanDelete', paths]);
+    return JSON.stringify({ success: true, message: 'ok', data: { planId: 'del-1', items: paths.map(p => ({ src: p, trashRel: p, spec: 'female_card', size: 100, isDir: false, name: 'x' })), totalBytes: 100, conflicts: [] } });
+  },
+  CommitDelete: (paths) => {
+    window.__calls.push(['CommitDelete', paths]);
+    return JSON.stringify({ success: true, message: 'ok', data: { moved: paths.length } });
+  },
+  GetTrashTree: () => JSON.stringify({ success: true, message: '', data: [
+    { rel: 'female_card/a.png', abs: 'C:/DELCARDS/DELED/female_card/a.png', originalAbs: 'C:/KK/female/a.png', spec: 'female_card', deletedAt: Date.now(), size: 100, isDir: false, name: 'a.png' },
+  ] }),
+  CmdTrashRestore: (rels) => JSON.stringify({ success: true, message: 'ok', data: { restored: rels.length, skipped: 0, conflicts: [] } }),
+  CmdTrashPurge: (rels, text) => JSON.stringify({ success: true, message: 'ok', data: { purged: rels.length, errors: [] } }),
   GetZipmodDetail: (guid) => JSON.stringify({ success: true, message: '', data: { guid, path: 'C:/x.zipmod', base: 'x.zipmod', size: 100, cards: [], plugins: [], refCards: 0, refPlugins: 0, parseErr: '' } }),
   GetFolderPreview: (p) => JSON.stringify({ success: true, message: '', data: {
     stats: { subfolderCount: 2, cardCount: 3, totalFiles: 7, totalSize: 1234 },
@@ -456,6 +480,75 @@ console.log('\n【13】历史窗口：列表 + 撤销（v2.1 §11.6）');
   await page.waitForTimeout(300);
   const closed = await page.locator('#history-modal.show').count();
   check('Esc 可关闭历史窗口', closed === 0);
+}
+
+console.log('\n【14】自由模式：按钮可见性与回收站（v2.1 §11.4）');
+{
+  // 安全模式下新建/重命名/删除按钮应隐藏
+  let visible = await page.locator('#btn-new-folder').isVisible();
+  check('安全模式下无「新建」入口', !visible);
+
+  // 切到自由修改模式
+  await page.locator('#btn-mode').click();
+  await page.waitForTimeout(300);
+  visible = await page.locator('#btn-new-folder').isVisible();
+  check('自由模式下显示「新建」按钮', visible);
+  visible = await page.locator('#btn-delete').isVisible();
+  check('自由模式下显示「删除」按钮', visible);
+
+  // 切回安全模式
+  await page.locator('#btn-mode').click();
+  await page.waitForTimeout(300);
+  visible = await page.locator('#btn-new-folder').isVisible();
+  check('切回安全模式后按钮隐藏', !visible);
+}
+
+console.log('\n【15】空白处右键 → 目录菜单（v2.1 §6.3）');
+{
+  await page.locator('#btn-mode').click();   // 自由模式
+  await page.waitForTimeout(300);
+
+  // 在列表空白处右键
+  const box = await page.locator('#left-list').boundingBox();
+  await page.mouse.click(box.x + box.width - 20, box.y + box.height - 20, { button: 'right' });
+  await page.waitForTimeout(400);
+
+  const shown = await page.locator('#context-menu.show').count();
+  check('空白处右键弹出菜单', shown === 1);
+
+  const items = await page.locator('#context-menu .menu-item').allInnerTexts();
+  const joined = items.join('|');
+  check('菜单含「新建文件夹」', joined.includes('新建文件夹'), joined);
+  check('菜单含「全选」', joined.includes('全选'), joined);
+  check('菜单含「刷新」', joined.includes('刷新'), joined);
+
+  // 空白处左键 → 清除焦点与勾选
+  await page.mouse.click(box.x + box.width - 20, box.y + box.height - 20);
+  await page.waitForTimeout(300);
+  const menuClosed = await page.locator('#context-menu.show').count();
+  check('空白处左键关闭菜单', menuClosed === 0);
+}
+
+console.log('\n【16】回收站模式（v2.1 §6.4）');
+{
+  await page.selectOption('#mode-select', 'trash');
+  await page.waitForTimeout(500);
+
+  const rows = await page.locator('#left-list .list-item').count();
+  check('回收站列表已渲染', rows >= 1, `实际 ${rows} 项`);
+
+  const restoreVisible = await page.locator('#btn-trash-restore').isVisible();
+  check('回收站显示「还原」按钮', restoreVisible);
+  const purgeVisible = await page.locator('#btn-trash-purge').isVisible();
+  check('回收站显示「彻底删除」按钮', purgeVisible);
+
+  // 隔离/启用按钮应禁用
+  const execDisabled = await page.locator('#btn-exec-left').isDisabled();
+  check('回收站模式禁用隔离按钮', execDisabled);
+
+  // 新建按钮应隐藏
+  const newVisible = await page.locator('#btn-new-folder').isVisible();
+  check('回收站模式隐藏「新建」按钮', !newVisible);
 }
 
 await page.screenshot({ path: path.join(__dirname, '..', 'build', 'frontend-test.png'), fullPage: false });

@@ -1172,7 +1172,146 @@ func (a *App) recoverPendingTx() {
 }
 
 // ---------------------------------------------------------------------------
-// 8. 辅助接口
+// 8. 自由模式 CRUD（v2.1 §6）
+// ---------------------------------------------------------------------------
+
+// CmdMkdir 在当前目录下新建文件夹。
+//
+// 返回实际创建名（默认名冲突时自动加 (2)）。
+func (a *App) CmdMkdir(side, mode, parentRel string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	res := manager.CmdMkdir(side, mode, parentRel)
+	if !res.OK {
+		return fail(res.Message)
+	}
+	a.emitLog("success", "crud", "已创建文件夹："+res.Name)
+	return ok(res, "已创建「"+res.Name+"」")
+}
+
+// CmdRename 重命名一个条目。
+func (a *App) CmdRename(pathAbs, newName string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	res := manager.CmdRename(pathAbs, newName)
+	if !res.OK {
+		return fail(res.Message)
+	}
+	a.emitLog("success", "crud", "已重命名为："+res.Name)
+	return ok(res, "已重命名为「"+res.Name+"」")
+}
+
+// PlanDelete 生成删除计划（零副作用）。
+func (a *App) PlanDelete(paths []string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	plan := manager.PlanDelete(paths)
+	return ok(plan, fmt.Sprintf("将把 %d 个项目移入回收站（共 %s）", len(plan.Items), formatBytes(plan.TotalBytes)))
+}
+
+// CommitDelete 执行删除（移入回收站）。
+func (a *App) CommitDelete(paths []string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	moved, errs, err := manager.CommitDelete(paths)
+	if err != nil {
+		for _, e := range errs {
+			a.emitLog("error", "crud", e)
+		}
+		return fail(err.Error())
+	}
+	a.emitLog("success", "crud", fmt.Sprintf("已移入回收站 %d 个项目。", moved))
+	return ok(map[string]interface{}{"moved": moved}, fmt.Sprintf("已移入回收站 %d 个项目。", moved))
+}
+
+// GetTrashTree 返回回收站列表。
+func (a *App) GetTrashTree() string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return ok([]interface{}{}, "")
+	}
+	return ok(manager.GetTrashTree(), "")
+}
+
+// CmdTrashRestore 还原回收站条目。
+func (a *App) CmdTrashRestore(trashRels []string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	res := manager.CmdTrashRestore(trashRels)
+	if res.Restored > 0 {
+		a.emitLog("success", "crud", fmt.Sprintf("已还原 %d 个项目。", res.Restored))
+	}
+	for _, c := range res.Conflicts {
+		a.emitLog("warn", "crud", c.Reason)
+	}
+	return ok(res, fmt.Sprintf("已还原 %d 个项目。", res.Restored))
+}
+
+// CmdTrashPurge 彻底删除回收站条目（需输入名称确认）。
+func (a *App) CmdTrashPurge(trashRels []string, confirmText string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	res := manager.CmdTrashPurge(trashRels, confirmText)
+	for _, e := range res.Errors {
+		a.emitLog("error", "crud", e)
+	}
+	if len(res.Errors) > 0 {
+		return fail(strings.Join(res.Errors, "; "))
+	}
+	a.emitLog("success", "crud", fmt.Sprintf("已彻底删除 %d 个项目。", res.Purged))
+	return ok(res, fmt.Sprintf("已彻底删除 %d 个项目。", res.Purged))
+}
+
+// formatBytes 把字节数格式化为易读文本。
+func formatBytes(n int64) string {
+	if n <= 0 {
+		return "0 B"
+	}
+	units := []string{"B", "KB", "MB", "GB"}
+	v := float64(n)
+	i := 0
+	for v >= 1024 && i < len(units)-1 {
+		v /= 1024
+		i++
+	}
+	return fmt.Sprintf("%.1f %s", v, units[i])
+}
+
+// ---------------------------------------------------------------------------
+// 9. 辅助接口
 // ---------------------------------------------------------------------------
 
 // GetKKSInfo 返回当前 KKS 根目录与隔离区路径，以及各资源类型的目录映射。
