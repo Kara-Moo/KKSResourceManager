@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -38,12 +39,18 @@ type App struct {
 
 	// logs 后端日志环形缓冲（前端订阅增量，不自己拼字符串）
 	logs *logRing
+
+	// thumbOnce 保证「首张缩略图」只记一次日志
+	thumbOnce sync.Once
+	// startedAt 进程启动时刻，用于计算首张缩略图耗时
+	startedAt time.Time
 }
 
 // NewApp 创建 App 实例。
 func NewApp() *App {
 	return &App{
-		logs: newLogRing(5000),
+		logs:      newLogRing(5000),
+		startedAt: time.Now(),
 	}
 }
 
@@ -93,10 +100,10 @@ func (a *App) startup(ctx context.Context) {
 	manager := a.manager
 	a.mu.RUnlock()
 	if manager != nil {
-		if err := manager.StartThumbQueue(a.notifyThumbsReady); err != nil {
+		// 幂等兜底：真正启动点见 SelectKKSRoot（FIX-01）。
+		if err := manager.StartThumbQueue(a.notifyThumbsReady, a.logThumbError); err != nil {
 			a.emitLog("warn", "preview", "缩略图队列启动失败："+err.Error())
 		}
-
 	}
 
 	// 崩溃恢复（§11.6）：自动回滚上次未完成的操作。
@@ -106,6 +113,46 @@ func (a *App) startup(ctx context.Context) {
 	a.recoverPendingTx()
 
 	a.ctx = ctx
+}
+
+// attachManager 切换当前 Manager，并负责启动缩略图队列。
+//
+// **唯一入口**：所有对 a.manager 的赋值都必须经过这里。
+//
+// v2.2 FIX-01 的成因就是「赋值在一处、启动在另一处」：
+// startup() 里启动队列时 a.manager 还是 nil（用户尚未选目录），
+// 而 SelectKKSRoot 创建了 Manager 却没启动队列 —— 两段代码各自看都合理，
+// 合起来就是「队列从未启动」。收敛到一个入口后，这类脱节不可能再发生。
+func (a *App) attachManager(m *Manager) {
+	a.mu.Lock()
+	old := a.manager
+	a.manager = m
+	a.mu.Unlock()
+
+	// 先停旧队列，避免旧 worker 继续为旧根生成缩略图
+	if old != nil && old != m {
+		old.StopThumbQueue()
+	}
+	if m == nil {
+		return
+	}
+
+	if err := m.StartThumbQueue(a.notifyThumbsReady, a.logThumbError); err != nil {
+		a.emitLog("warn", "preview", "缩略图队列启动失败："+err.Error())
+		return
+	}
+
+	a.emitLog("info", "preview",
+		fmt.Sprintf("[preview] 队列已启动，worker=3，缓存目录=%s",
+			filepath.Join(m.DelCardsRoot, "_state", ThumbDirName)))
+
+	// 队列启动后让前端重取面板：
+	// 队列启动前渲染的格子已被记成 pending，且任务从未入队，
+	// 不重新请求它们会永远停在灰块。
+	if a.ctx != nil {
+		wruntime.EventsEmit(a.ctx, "panel:invalidate",
+			map[string]interface{}{"reason": "thumb-queue-started"})
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -174,9 +221,9 @@ func (a *App) SelectKKSRoot() string {
 		}, fmt.Sprintf("加载错误：缺少必需的目录 %s", strings.Join(missing, "、")))
 	}
 
-	a.mu.Lock()
-	a.manager = manager
-	a.mu.Unlock()
+	// 切换根目录：所有给 a.manager 赋值的地方都走 attachManager，
+	// 它在同一个入口里负责启动缩略图队列（v2.2 FIX-01）。
+	a.attachManager(manager)
 
 	// 异步执行全量扫描，避免阻塞 UI
 	a.startScan(manager)
@@ -1065,7 +1112,42 @@ func (a *App) notifyThumbsReady(results []preview.Result) {
 	if a.ctx == nil || len(results) == 0 {
 		return
 	}
+
+	// 首张出图埋点（§10.3）：确认队列真的在工作，而不是"看起来在等"。
+	a.thumbOnce.Do(func() {
+		elapsed := time.Since(a.startedAt).Milliseconds()
+		a.emitLog("info", "preview",
+			fmt.Sprintf("[preview] 首张缩略图生成成功，耗时 %dms（累计 %d 张）", elapsed, len(results)))
+	})
+
 	wruntime.EventsEmit(a.ctx, "thumb:ready", results)
+}
+
+// logThumbError 记录单张缩略图生成失败。
+//
+// 不允许静默丢弃 —— 否则以后又是一轮「图片不显示但我不知道为什么」。
+func (a *App) logThumbError(path string, err error) {
+	a.emitLog("warn", "preview", fmt.Sprintf("[preview] 生成失败 %s: %v", path, err))
+}
+
+// GetThumbStats 返回缩略图队列统计（诊断用）。
+//
+// 验收手段：选完根目录后 misses > 0 且 3 秒内 generated > 0；
+// 切走再切回同一目录，generated 不增长（证明缓存生效）。
+func (a *App) GetThumbStats() string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	stats := manager.ThumbStats()
+	return ok(map[string]interface{}{
+		"stats": stats,
+		// running=false 说明队列没启动 —— 这正是 FIX-01 的判别依据
+		"running": manager.ThumbQueueRunning(),
+	}, "")
 }
 
 // ZipmodDetail zipmod 的占用详情。

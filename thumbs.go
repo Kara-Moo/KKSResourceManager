@@ -24,7 +24,12 @@ const ThumbDirName = "thumb"
 // StartThumbQueue 启动缩略图队列。
 //
 // notify 用于批量通知前端（100ms 窗口），由调用方注入。
-func (m *Manager) StartThumbQueue(notify preview.NotifyFunc) error {
+// onErr 接收单张生成失败的错误（可为 nil）。
+//
+// 幂等：已启动时直接返回 nil。这一点很重要 ——
+// startup() 与 SelectKKSRoot() 都会调用它，后者才是真正的启动点
+// （startup 时 manager 还是 nil，那是 v2.2 FIX-01 的成因）。
+func (m *Manager) StartThumbQueue(notify preview.NotifyFunc, onErr func(path string, err error)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -38,6 +43,7 @@ func (m *Manager) StartThumbQueue(notify preview.NotifyFunc) error {
 	}
 
 	m.thumbs = preview.NewQueue(diskDir, 3, m.generateThumb, notify)
+	m.thumbs.SetErrorHandler(onErr)
 	return nil
 }
 
@@ -61,6 +67,16 @@ func (m *Manager) StopThumbQueue() {
 		m.thumbs.Close()
 		m.thumbs = nil
 	}
+}
+
+// ThumbQueueRunning 队列是否已启动。
+//
+// 单独暴露而不只看 Stats：队列未启动时 Stats 全 0，
+// 与「已启动但还没请求过」无法区分，而这两者的处置完全不同。
+func (m *Manager) ThumbQueueRunning() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.thumbs != nil
 }
 
 // ThumbStats 返回缩略图队列统计（性能埋点与测试断言用）。

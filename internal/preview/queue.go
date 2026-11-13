@@ -15,6 +15,7 @@ package preview
 
 import (
 	"crypto/sha1"
+	"errors"
 	"encoding/base64"
 	"encoding/hex"
 	"os"
@@ -220,13 +221,38 @@ type Queue struct {
 	notifyMu   sync.Mutex
 	notifyBuf  []Result
 
+	// errMu 保护 onErr 回调
+	errMu sync.Mutex
+	onErr func(abs string, err error)
+
 	// stats 统计（用于性能埋点与测试断言）
 	statsMu    sync.Mutex
 	diskHits   int
 	memHits    int
 	misses     int
 	generated  int
+	failed     int
 	dedupCount int
+}
+
+// SetErrorHandler 设置生成失败的回调。
+//
+// 队列不直接依赖日志设施，由调用方注入 —— 这样 preview 包保持无副作用，
+// 同时满足「失败必须可见」的要求（不允许静默丢弃）。
+func (q *Queue) SetErrorHandler(fn func(abs string, err error)) {
+	q.errMu.Lock()
+	q.onErr = fn
+	q.errMu.Unlock()
+}
+
+// reportError 把生成失败交给回调。
+func (q *Queue) reportError(abs string, err error) {
+	q.errMu.Lock()
+	fn := q.onErr
+	q.errMu.Unlock()
+	if fn != nil {
+		fn(abs, err)
+	}
 }
 
 // NewQueue 创建队列。
@@ -380,7 +406,20 @@ func (q *Queue) worker() {
 			q.generated++
 			q.statsMu.Unlock()
 			q.emit(Result{ThumbKey: key, DataURI: uri})
+			continue
 		}
+
+		// 失败：计数 + 上报。
+		//
+		// 早前版本这里什么都不做，失败的任务彻底消失，
+		// 用户只看到格子一直是灰块，日志里也没有任何线索。
+		q.statsMu.Lock()
+		q.failed++
+		q.statsMu.Unlock()
+		if err == nil {
+			err = errors.New("生成结果为空")
+		}
+		q.reportError(abs, err)
 	}
 }
 
@@ -484,10 +523,15 @@ func (q *Queue) Close() {
 
 // Stats 返回统计信息（性能埋点与测试断言用）。
 type Stats struct {
-	MemHits    int `json:"memHits"`
-	DiskHits   int `json:"diskHits"`
-	Misses     int `json:"misses"`
-	Generated  int `json:"generated"`
+	MemHits   int `json:"memHits"`
+	DiskHits  int `json:"diskHits"`
+	Misses    int `json:"misses"`
+	Generated int `json:"generated"`
+	// Failed 生成失败数。
+	//
+	// 必须暴露出来：早前版本失败时静默丢弃，
+	// 结果就是「图片不显示但不知道为什么」，排查成本极高。
+	Failed     int `json:"failed"`
 	DedupCount int `json:"dedupCount"`
 	QueueLen   int `json:"queueLen"`
 	Inflight   int `json:"inflight"`
@@ -501,6 +545,7 @@ func (q *Queue) Stats() Stats {
 		DiskHits:   q.diskHits,
 		Misses:     q.misses,
 		Generated:  q.generated,
+		Failed:     q.failed,
 		DedupCount: q.dedupCount,
 	}
 	q.statsMu.Unlock()

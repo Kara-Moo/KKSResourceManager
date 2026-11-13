@@ -2831,6 +2831,13 @@
         };
         window.__thumbHandler = handleThumbs;
         window.runtime.EventsOn('thumb:ready', handleThumbs);
+
+        // 后端要求重取面板（v2.2 FIX-01）。
+        // 队列启动前渲染的格子已被记成 pending，且任务从未入队 ——
+        // 不重新请求，那些格子永远是灰块。
+        window.runtime.EventsOn('panel:invalidate', () => {
+            refreshPanel();
+        });
         window.runtime.EventsOn('history:changed', () => {
             if (elHistoryModal.classList.contains('show')) reloadHistory();
         });
