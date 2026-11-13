@@ -54,12 +54,24 @@ export function GetModsTreeData() {
   return window['go']['main']['App']['GetModsTreeData']();
 }
 
+export function GetRightPanel(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GetRightPanel'](arg1, arg2, arg3, arg4);
+}
+
 export function GetRightTreeData(arg1) {
   return window['go']['main']['App']['GetRightTreeData'](arg1);
 }
 
 export function GetScanStatus() {
   return window['go']['main']['App']['GetScanStatus']();
+}
+
+export function GetThumbBatch(arg1) {
+  return window['go']['main']['App']['GetThumbBatch'](arg1);
+}
+
+export function GetZipmodDetail(arg1) {
+  return window['go']['main']['App']['GetZipmodDetail'](arg1);
 }
 
 export function HideFolders(arg1, arg2) {

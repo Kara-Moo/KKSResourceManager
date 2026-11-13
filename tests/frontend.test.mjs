@@ -66,7 +66,10 @@ const mockApp = {
   },
   GetRightTreeData: (mode) => JSON.stringify({ success: true, message: '', data: { mode, root: 'C:\\\\DEL', rootName: 'DEL', nodes: [] } }),
   GetInvisibleTreeData: () => JSON.stringify({ success: true, message: '', data: ${JSON.stringify(hiddenTree)} }),
-  GetInstalledModsData: () => JSON.stringify({ success: true, message: '', data: { nodes: [] } }),
+  GetInstalledModsData: () => JSON.stringify({ success: true, message: '', data: { mode: 'zipmod', root: 'C:/KK/mods', rootName: 'mods', nodes: [
+    { id: 'C:/KK/mods/used.zipmod', name: 'used.zipmod', type: 'mod', path: '', mods: ['g1'], modNames: ['used.zipmod'], size: 1024, guid: 'g1', refCount: 15, refCards: 14, refPlugins: 1 },
+    { id: 'C:/KK/mods/free.zipmod', name: 'free.zipmod', type: 'mod', path: '', mods: ['g2'], modNames: ['free.zipmod'], size: 2048, guid: 'g2', refCount: 0, refCards: 0, refPlugins: 0 },
+  ]}}),
   GetModsTreeData: () => JSON.stringify({ success: true, message: '', data: { nodes: [] } }),
   GetCardPreview: (p) => JSON.stringify({ success: true, message: '', data: { dataUri: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==' } }),
   // v2.1：右栏面板一次请求出全部
@@ -378,6 +381,32 @@ console.log('\n【11】thumb:ready 局部补图（v2.1 §10.3）');
   await page.waitForTimeout(200);
   const imgs = await page.locator('#panel-sections .panel-cell img').count();
   check('补图后出现 img 元素', imgs >= 1, `实际 ${imgs} 个`);
+}
+
+console.log('\n【12】zipmod 占用数：红色数字（v2.1 §11.3）');
+{
+  await page.selectOption('#mode-select', 'zipmod');
+  await page.waitForTimeout(500);
+
+  const counts = await page.locator('#left-list .ref-count').count();
+  check('zipmod 行显示占用数列', counts === 2, `实际 ${counts} 个`);
+
+  const texts = await page.locator('#left-list .ref-count').allInnerTexts();
+  check('占用数正确（15 / 0）', texts[0] === '15' && texts[1] === '0', `实际 ${texts.join(',')}`);
+
+  const colors = await page.evaluate(() => {
+    const els = Array.from(document.querySelectorAll('#left-list .ref-count'));
+    return els.map(e => getComputedStyle(e).color + '|' + e.className);
+  });
+  check('有引用的显示红色', colors[0].includes('rgb(198, 40, 40)'), `实际 ${colors[0]}`);
+  check('0 引用的显示灰色', colors[1].includes('is-zero'), `实际 ${colors[1]}`);
+
+  const tooltip = await page.locator('#left-list .ref-count').first().getAttribute('title');
+  check('tooltip 含占用明细', tooltip && tooltip.includes('卡片') && tooltip.includes('插件'), `实际 "${tooltip}"`);
+
+  // 不应显示文件大小
+  const sizes = await page.locator('#left-list .size').count();
+  check('zipmod 行不显示文件大小', sizes === 0, `实际 ${sizes} 个`);
 }
 
 await page.screenshot({ path: path.join(__dirname, '..', 'build', 'frontend-test.png'), fullPage: false });

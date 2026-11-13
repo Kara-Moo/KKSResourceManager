@@ -27,9 +27,15 @@ export function GetLogs(arg1:number,arg2:string):Promise<string>;
 
 export function GetModsTreeData():Promise<string>;
 
+export function GetRightPanel(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
+
 export function GetRightTreeData(arg1:string):Promise<string>;
 
 export function GetScanStatus():Promise<string>;
+
+export function GetThumbBatch(arg1:Array<string>):Promise<string>;
+
+export function GetZipmodDetail(arg1:string):Promise<string>;
 
 export function HideFolders(arg1:Array<string>,arg2:string):Promise<string>;
 

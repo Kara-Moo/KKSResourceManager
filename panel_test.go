@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"kksresourcemanager/internal/index"
 )
 
 // TestTileCount 验证九宫格的数量规则。
@@ -413,3 +415,82 @@ func indexOf(s, sub string) int {
 }
 
 var _ = os.Stat
+
+// TestModsTreeRefCount 验证 zipmod 列表的占用数（O(1) 内存查询）。
+func TestModsTreeRefCount(t *testing.T) {
+	env := newTestEnv(t)
+	m := env.manager
+
+	// 两个 zipmod
+	modA := filepath.Join(m.ModsDir(), "a.zipmod")
+	modB := filepath.Join(m.ModsDir(), "b.zipmod")
+	writeFile(t, modA, "mod")
+	writeFile(t, modB, "mod")
+
+	m.ZipmodDB["guid.a"] = modA
+	m.ZipmodDB["guid.b"] = modB
+	// 索引里有 GUID（真实扫描后的状态）
+	m.index = index.NewIndexData(m.KksRoot)
+	m.index.Zipmods[modA] = &index.ZipmodEntry{GUID: "guid.a"}
+	m.index.Zipmods[modB] = &index.ZipmodEntry{GUID: "guid.b"}
+	m.GlobalDepMap["guid.a"] = []string{"c1.png", "c2.png", "c3.png"}
+	m.PluginDepMap["guid.a"] = []string{"BepInEx/plugins/X.dll"}
+	m.GlobalDepMap["guid.b"] = nil
+
+	nodes := m.buildModsTree(m.ModsDir())
+	if len(nodes) != 2 {
+		t.Fatalf("应有 2 个 zipmod，实际 %d", len(nodes))
+	}
+	byName := make(map[string]TreeNode, 2)
+	for _, n := range nodes {
+		byName[n.Name] = n
+	}
+
+	a := byName["a.zipmod"]
+	if a.RefCards != 3 {
+		t.Errorf("a.zipmod 应有 3 个卡片引用，实际 %d", a.RefCards)
+	}
+	if a.RefPlugins != 1 {
+		t.Errorf("a.zipmod 应有 1 个插件引用，实际 %d", a.RefPlugins)
+	}
+	if a.RefCount != 4 {
+		t.Errorf("a.zipmod 总占用应为 4，实际 %d", a.RefCount)
+	}
+	if a.GUID != "guid.a" {
+		t.Errorf("a.zipmod 的 GUID 应为 guid.a，实际 %q", a.GUID)
+	}
+
+	b := byName["b.zipmod"]
+	if b.RefCount != 0 {
+		t.Errorf("b.zipmod 占用应为 0，实际 %d", b.RefCount)
+	}
+}
+
+// TestZipmodDetailOf 验证占用详情包含卡片与插件明细。
+func TestZipmodDetailOf(t *testing.T) {
+	env := newTestEnv(t)
+	m := env.manager
+
+	modPath := filepath.Join(m.ModsDir(), "detail.zipmod")
+	writeFile(t, modPath, "mod")
+	m.ZipmodDB["detail.guid"] = modPath
+	m.GlobalDepMap["detail.guid"] = []string{"a.png", "b.png"}
+	m.PluginDepMap["detail.guid"] = []string{"BepInEx/plugins/Foo.dll"}
+
+	d := m.ZipmodDetailOf("detail.guid")
+	if d.GUID != "detail.guid" {
+		t.Errorf("GUID 应为 detail.guid，实际 %q", d.GUID)
+	}
+	if d.RefCards != 2 {
+		t.Errorf("应有 2 个卡片引用，实际 %d", d.RefCards)
+	}
+	if d.RefPlugins != 1 {
+		t.Errorf("应有 1 个插件引用，实际 %d", d.RefPlugins)
+	}
+	if len(d.Cards) != 2 {
+		t.Errorf("cards 列表应有 2 项，实际 %d", len(d.Cards))
+	}
+	if len(d.Plugins) != 1 || d.Plugins[0].Name != "Foo.dll" {
+		t.Errorf("plugins 列表应含 Foo.dll，实际 %v", d.Plugins)
+	}
+}

@@ -415,8 +415,16 @@ type TreeNode struct {
 	Type string `json:"type"` // card / folder / mod / hidden
 	Path string `json:"path"`
 	// Rel 相对其所属根的 POSIX 路径。索引回查必须用它，不能用 ID（绝对路径）。
-	Rel      string   `json:"rel,omitempty"`
-	Mods     []string `json:"mods"`
+	Rel string `json:"rel,omitempty"`
+	// GUID zipmod 的 GUID（仅 mod 类型有值）
+	GUID string `json:"guid,omitempty"`
+	// RefCount 被多少个文件占用（卡片 + 插件）。
+	// 仅 mod 类型有值；由索引内存表直接得出，不做任何磁盘访问（红线 N2）。
+	RefCount int `json:"refCount"`
+	// RefCards / RefPlugins 占用明细，用于 tooltip 与详情弹窗
+	RefCards   int      `json:"refCards"`
+	RefPlugins int      `json:"refPlugins"`
+	Mods       []string `json:"mods"`
 	// ModNames 依赖的 zipmod 文件名列表
 	ModNames []string `json:"modNames"`
 	Size     int64    `json:"size"`
@@ -719,9 +727,18 @@ func (m *Manager) buildModsTree(root string) []TreeNode {
 			continue
 		}
 		full := filepath.Join(root, e.Name())
+		// GUID 优先取索引（O(1)，索引里已有解析结果）；
+		// 索引没有（如刚隔离进来的新文件）才实时解析一次。
 		guid := ""
-		if manifest, err := ReadModManifest(full); err == nil {
-			guid = manifest.GUID
+		if m.index != nil {
+			if entry, ok := m.index.Zipmods[full]; ok {
+				guid = entry.GUID
+			}
+		}
+		if guid == "" {
+			if manifest, err := ReadModManifest(full); err == nil {
+				guid = manifest.GUID
+			}
 		}
 		node := TreeNode{
 			ID:   full,
@@ -731,8 +748,14 @@ func (m *Manager) buildModsTree(root string) []TreeNode {
 			Size: info.Size(),
 		}
 		if guid != "" {
+			node.GUID = guid
 			node.Mods = []string{guid}
 			node.ModNames = []string{e.Name()}
+			// 占用数：O(1) 内存查询（红线 N2）
+			// 绝不为了显示这个数字去 os.Stat 每个引用文件。
+			node.RefCards = len(m.GlobalDepMap[guid])
+			node.RefPlugins = len(m.PluginDepMap[guid])
+			node.RefCount = node.RefCards + node.RefPlugins
 		}
 		nodes = append(nodes, node)
 	}
