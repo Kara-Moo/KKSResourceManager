@@ -1473,6 +1473,36 @@ func (a *App) OpenDelCardsRoot() string {
 	return ok(nil, "已打开隔离区目录。")
 }
 
+// OpenFolderInExplorer 在文件管理器中打开指定目录。
+//
+// 相对 OpenDelCardsRoot 的区别：这里打开的是**用户当前浏览的目录**，
+// 空白区菜单的「在资源管理器中打开」应当指向它，而不是固定的隔离区根。
+// 路径必须位于受管范围内，避免被当作任意路径执行入口。
+func (a *App) OpenFolderInExplorer(absPath string) string {
+	a.mu.RLock()
+	manager := a.manager
+	a.mu.RUnlock()
+
+	if manager == nil {
+		return fail("请先选择 KKS 根目录。")
+	}
+	abs := strings.TrimSpace(absPath)
+	if abs == "" {
+		return fail("未指定目录。")
+	}
+	if !manager.pathAllowed(abs) {
+		return fail("该目录不在允许的范围内。")
+	}
+	info, err := os.Stat(abs)
+	if err != nil || !info.IsDir() {
+		return fail("目录不存在：" + abs)
+	}
+	if err := openDirectory(abs); err != nil {
+		return fail(fmt.Sprintf("打开目录失败: %v", err))
+	}
+	return ok(nil, "已在资源管理器中打开。")
+}
+
 // openDirectory 跨平台打开目录。
 func openDirectory(path string) error {
 	switch runtime.GOOS {

@@ -687,6 +687,68 @@
     let rightSelected = new Set();
     let leftNodes = [];
     let rightNodes = [];
+
+    // =====================================================================
+    // 全局异常兜底（v2.2 FIX-05）
+    //
+    // 没有兜底的项目，任何一处 JS 错误都会退化成「点了没反应」——
+    // 用户最无法描述、最难排查的故障形态。
+    //
+    //   error               → toast（避免循环弹窗）
+    //   unhandledrejection  → showAlert（阻断性，异步失败用户必须知道）
+    //
+    // 两者都先落到 console，保证日志里能查到堆栈。
+    // =====================================================================
+
+    // reportError 把异常变成用户可见的提示，同时避免自身抛错引发二次异常。
+    let reportingError = false;
+    function reportError(message, blocking) {
+        if (reportingError) return;      // 防重入：兜底自身出错时不再递归
+        reportingError = true;
+        try {
+            console.error(message);
+            if (blocking && typeof showAlert === 'function') {
+                showAlert(message);
+            } else if (typeof toast === 'function') {
+                toast(message, 'error');
+            }
+        } catch (inner) {
+            // 兜底都失败了，只能留在控制台
+            console.error('[reportError] 兜底提示失败:', inner);
+        } finally {
+            reportingError = false;
+        }
+    }
+
+    window.addEventListener('error', (e) => {
+        const msg = (e && (e.message || (e.error && e.error.message))) || '未知错误';
+        reportError('界面发生异常：' + msg + '（详见日志）', false);
+    });
+
+    window.addEventListener('unhandledrejection', (e) => {
+        const r = e ? e.reason : null;
+        const msg = (r && r.message) ? r.message : String(r);
+        reportError('操作未完成：' + msg, true);
+    });
+
+    // guard 包裹异步事件处理器，把异常转成用户可见的提示。
+    //
+    // 为什么需要：async 函数抛错产生的是 rejected promise，
+    // 事件分发器不会处理它 —— 用户侧表现为「点了没反应」。
+    // 这类故障在 v2.1 出现过（formatBytes 未定义），代价是排查数小时。
+    function guard(fn) {
+        return async (...args) => {
+            try {
+                return await fn(...args);
+            } catch (err) {
+                const msg = (err && err.message) ? err.message : String(err);
+                console.error(err);
+                if (typeof showAlert === 'function') {
+                    showAlert('操作失败：' + msg);
+                }
+            }
+        };
+    }
     let leftRoot = '';
     let rightRoot = '';
     let kksReady = false;
@@ -1639,7 +1701,7 @@
 
         // 二次确认
         showConfirm('移入回收站',
-            `将把 ${items.length} 个项目移入回收站（共 ${formatBytes(plan.totalBytes || 0)}），可在「回收站（DELED）」中还原。`,
+            `将把 ${items.length} 个项目移入回收站（共 ${formatSize(plan.totalBytes || 0) || '0 B'}），可在「回收站（DELED）」中还原。`,
             async () => {
                 const res = await callBackend('CommitDelete', Array.from(selected));
                 if (!res.success) {
@@ -1708,11 +1770,11 @@
     }
 
     // 绑定自由模式按钮
-    document.getElementById('btn-new-folder').onclick = () => doNewFolder('left');
-    document.getElementById('btn-rename').onclick = () => doRename('left');
-    document.getElementById('btn-delete').onclick = () => doDelete('left');
-    document.getElementById('btn-trash-restore').onclick = doTrashRestore;
-    document.getElementById('btn-trash-purge').onclick = doTrashPurge;
+    document.getElementById('btn-new-folder').onclick = guard(() => doNewFolder('left'));
+    document.getElementById('btn-rename').onclick = guard(() => doRename('left'));
+    document.getElementById('btn-delete').onclick = guard(() => doDelete('left'));
+    document.getElementById('btn-trash-restore').onclick = guard(doTrashRestore);
+    document.getElementById('btn-trash-purge').onclick = guard(doTrashPurge);
 
     // ---------------------------------------------------------------------
     // 空白区域菜单（§6.3）
@@ -1735,7 +1797,7 @@
                 ? `${escapeHtml(label)}<span style="float:right;color:#999;font-size:11px;">${escapeHtml(shortcut)}</span>`
                 : escapeHtml(label);
             if (!disabled) {
-                mi.onclick = () => { hideContextMenu(); handler(); };
+                mi.onclick = guard(() => { hideContextMenu(); return handler(); });
             }
             elContextMenu.appendChild(mi);
         };
@@ -1777,8 +1839,19 @@
     }
 
     // openInExplorer 在资源管理器中打开当前目录。
+    //
+    // 必须传**当前浏览的目录**，而不是固定的隔离区根 ——
+    // 早期版本无论在哪一层都打开 DELCARDS 根，与菜单文案不符。
     async function openInExplorer(side) {
-        const res = await callBackend('OpenDelCardsRoot');
+        const isLeft = side === 'left';
+        const root = isLeft ? leftRoot : rightRoot;
+        const cur = isLeft ? leftCurrentPath : rightCurrentPath;
+        if (!root) {
+            showAlert('请先选择目录。');
+            return;
+        }
+        const abs = cur ? root + '/' + cur : root;
+        const res = await callBackend('OpenFolderInExplorer', abs);
         if (!res.success) {
             showAlert(res.message || '无法打开目录。');
         }
@@ -1871,7 +1944,7 @@
             if (!undoable) {
                 btn.title = e.reverted ? '已撤销' : ((e.steps || []).length === 0 ? '超出可撤销范围' : '不可撤销');
             }
-            btn.onclick = () => doUndo(e.txId);
+            btn.onclick = guard(() => doUndo(e.txId));
             row.appendChild(btn);
 
             elHistoryBody.appendChild(row);
@@ -1905,7 +1978,7 @@
         }, '撤销');
     }
 
-    document.getElementById('btn-open-history').onclick = openHistory;
+    document.getElementById('btn-open-history').onclick = guard(openHistory);
     document.getElementById('btn-history-close').onclick = closeHistory;
     elHistoryModal.addEventListener('click', (e) => {
         if (e.target === elHistoryModal) closeHistory();
@@ -2018,7 +2091,7 @@
     });
 
     // 日志窗口交互
-    document.getElementById('btn-open-log').onclick = openLogModal;
+    document.getElementById('btn-open-log').onclick = guard(openLogModal);
     document.getElementById('btn-log-close').onclick = closeLogModal;
     elLogModal.addEventListener('click', (e) => {
         if (e.target === elLogModal) closeLogModal();
@@ -2588,17 +2661,17 @@
         await refreshAll();
     }
 
-    document.getElementById('btn-exec-left').onclick = isolateSelection;
-    document.getElementById('btn-exec-right').onclick = restoreSelection;
-    document.getElementById('btn-restore-hidden').onclick = restoreHiddenFolders;
+    document.getElementById('btn-exec-left').onclick = guard(isolateSelection);
+    document.getElementById('btn-exec-right').onclick = guard(restoreSelection);
+    document.getElementById('btn-restore-hidden').onclick = guard(restoreHiddenFolders);
 
     // 剪贴板工具条按钮
-    document.getElementById('btn-copy-left').onclick = () => doCopy('left');
-    document.getElementById('btn-cut-left').onclick = () => doCut('left');
-    document.getElementById('btn-paste-left').onclick = () => doPaste('left');
-    document.getElementById('btn-copy-right').onclick = () => doCopy('right');
-    document.getElementById('btn-cut-right').onclick = () => doCut('right');
-    document.getElementById('btn-paste-right').onclick = () => doPaste('right');
+    document.getElementById('btn-copy-left').onclick = guard(() => doCopy('left'));
+    document.getElementById('btn-cut-left').onclick = guard(() => doCut('left'));
+    document.getElementById('btn-paste-left').onclick = guard(() => doPaste('left'));
+    document.getElementById('btn-copy-right').onclick = guard(() => doCopy('right'));
+    document.getElementById('btn-cut-right').onclick = guard(() => doCut('right'));
+    document.getElementById('btn-paste-right').onclick = guard(() => doPaste('right'));
 
     // ---------------------------------------------------------------------
     // UI 交互

@@ -114,7 +114,7 @@ const mockApp = {
   },
   PlanDelete: (paths) => {
     window.__calls.push(['PlanDelete', paths]);
-    return JSON.stringify({ success: true, message: 'ok', data: { planId: 'del-1', items: paths.map(p => ({ src: p, trashRel: p, spec: 'female_card', size: 100, isDir: false, name: 'x' })), totalBytes: 100, conflicts: [] } });
+    return JSON.stringify({ success: true, message: 'ok', data: { planId: 'del-1', items: paths.map(p => ({ src: p, trashRel: p, spec: 'female_card', size: 100, isDir: false, name: 'x' })), totalBytes: 5976883, conflicts: [] } });
   },
   CommitDelete: (paths) => {
     window.__calls.push(['CommitDelete', paths]);
@@ -125,6 +125,7 @@ const mockApp = {
   ] }),
   CmdTrashRestore: (rels) => JSON.stringify({ success: true, message: 'ok', data: { restored: rels.length, skipped: 0, conflicts: [] } }),
   CmdTrashPurge: (rels, text) => JSON.stringify({ success: true, message: 'ok', data: { purged: rels.length, errors: [] } }),
+  OpenFolderInExplorer: (abs) => JSON.stringify({ success: true, message: 'ok', data: null }),
   GetZipmodDetail: (guid) => JSON.stringify({ success: true, message: '', data: { guid, path: 'C:/x.zipmod', base: 'x.zipmod', size: 100, cards: [], plugins: [], refCards: 0, refPlugins: 0, parseErr: '' } }),
   GetFolderPreview: (p) => JSON.stringify({ success: true, message: '', data: {
     stats: { subfolderCount: 2, cardCount: 3, totalFiles: 7, totalSize: 1234 },
@@ -549,6 +550,68 @@ console.log('\n【16】回收站模式（v2.1 §6.4）');
   // 新建按钮应隐藏
   const newVisible = await page.locator('#btn-new-folder').isVisible();
   check('回收站模式隐藏「新建」按钮', !newVisible);
+}
+
+
+console.log('\n【17】FIX-05：删除确认框（不得静默失败）');
+{
+  // 回到角色卡模式 + 自由修改模式
+  await page.selectOption('#mode-select', 'female_card');
+  await page.waitForTimeout(500);
+  await page.waitForTimeout(400);
+
+  const opModeNow = await page.evaluate(() => opMode);
+  if (opModeNow !== 'free') {
+    await page.locator('#btn-mode').click();
+    await page.waitForTimeout(300);
+  }
+
+  // 进入 FolderA（根目录只有文件夹）
+  const folder = page.locator('#left-list .list-item[data-type="folder"]').first();
+  await folder.dblclick();
+  await page.waitForTimeout(500);
+
+  const rows = await page.locator('#left-list .list-item').count();
+  check('已进入 FolderA 且有条目', rows >= 1, `实际 ${rows} 行`);
+
+  // 勾选第一张卡
+  await page.locator('#left-list .list-item input[type=checkbox]').first().click();
+  await page.waitForTimeout(300);
+
+  // 点删除
+  await page.locator('#btn-delete').click();
+  await page.waitForTimeout(600);
+
+  const modalShown = await page.locator('#modal-mask.show').count();
+  check('点删除后确认框出现（不再毫无反应）', modalShown === 1, `实际 ${modalShown}`);
+
+  const body = await page.locator('#modal-body').innerText();
+  check('确认框文案含正确大小（MB）', /MB|B/.test(body) && !body.includes('NaN'), `实际 "${body}"`);
+  check('确认框文案含条目数', body.includes('1 个项目'), `实际 "${body}"`);
+
+  // 关闭
+  await page.locator('#modal-foot button').first().click();
+  await page.waitForTimeout(300);
+  const closed = await page.locator('#modal-mask.show').count();
+  check('取消后确认框关闭', closed === 0);
+}
+
+console.log('\n【18】FIX-05：全局异常兜底');
+{
+  // 制造一个未捕获的 Promise 拒绝 → 应弹阻断性提示
+  await page.evaluate(() => {
+    Promise.reject(new Error('测试用的异步异常'));
+  });
+  await page.waitForTimeout(500);
+
+  const modalShown = await page.locator('#modal-mask.show').count();
+  const body = modalShown ? await page.locator('#modal-body').innerText() : '';
+  check('未捕获的异步异常弹出提示', modalShown === 1 && body.includes('测试用的异步异常'), `实际显示=${modalShown} 文案="${body}"`);
+
+  if (modalShown) {
+    await page.locator('#modal-foot button').first().click();
+    await page.waitForTimeout(300);
+  }
 }
 
 await page.screenshot({ path: path.join(__dirname, '..', 'build', 'frontend-test.png'), fullPage: false });
