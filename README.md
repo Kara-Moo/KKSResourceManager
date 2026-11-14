@@ -1,16 +1,23 @@
 # KKS 资源管理器 · KKS Resource Manager
 
-> 面向 **Koikatsu Sunshine（KKS）** 的资源与 zipmod 依赖安全管理桌面工具。
-> 目标只有一句话：**安全地隔离无用资源，绝对不破坏全局依赖，绝对不破坏原有目录结构。**
+> 面向 **Koikatsu Sunshine（KKS）** 的资源安全管理桌面工具。
+> 目标只有一句话：**安全地隔离无用资源，绝对不破坏原有目录结构。**
+
+> **v2.4 状态（2026-11-14）**：已彻底移除 zipmod 管理能力；索引升级为 schema v2
+> （只存卡片指纹，不解析 PNG / GUID）；文件夹迁移引擎重写为先规划后动盘、整树迁移、失败可回滚。
+> 各 Go 文件的职责说明见 [`docs/项目说明与Go文件导览.md`](docs/项目说明与Go文件导览.md)。
 
 | 项目 | 内容 |
 |---|---|
 | 平台 | Windows amd64（WebView2，随 Edge 提供） |
 | 技术栈 | Go 1.27.4 · Wails v2.17.1 · 原生 HTML/CSS/JS（无前端构建步骤） |
-| 当前版本 | v2.3（2026-11-13） |
+| 当前版本 | v2.4（2026-11-14） |
 | 界面 | 中文，单窗口 1440×900 |
-| 可执行文件 | `dist/KKSResourceManager.exe`（约 13.6 MB，绿色单文件） |
-| 开源依赖 | `illusionsCard`（卡片二进制解析）、Wails v2、`golang.org/x/image`、`golang.org/x/sys` |
+| 可执行文件 | `dist/KKSResourceManager.exe`（绿色单文件） |
+| 开源依赖 | Wails v2、`golang.org/x/image`、`golang.org/x/sys` |
+
+> 下文部分章节写于 v2.3，仍保留了 zipmod 管理时期的设计背景；
+> 当前代码结构与行为以 [`docs/项目说明与Go文件导览.md`](docs/项目说明与Go文件导览.md) 为准。
 
 ---
 
