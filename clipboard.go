@@ -192,7 +192,6 @@ func (m *Manager) Paste(targetDir, targetSide, targetMode string) ClipboardResul
 				res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("移动失败 %s -> %s: %v", p.src, p.dst, err)})
 				continue
 			}
-			m.afterResourceMoved(p.src, p.dst)
 			res.Affected++
 			res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[移动] %s -> %s", p.src, p.dst)})
 		} else {
@@ -218,22 +217,6 @@ func (m *Manager) Paste(targetDir, targetSide, targetMode string) ClipboardResul
 		res.Logs = append(res.Logs, OperationLog{"warn", fmt.Sprintf("粘贴结束，存在 %d 个失败项。", res.FailedCount)})
 	}
 	return res
-}
-
-// ---------------------------------------------------------------------------
-// 依赖与状态维护
-// ---------------------------------------------------------------------------
-
-// afterResourceMoved 在文件移动/复制后同步维护正向索引。
-func (m *Manager) afterResourceMoved(src, dst string) {
-	// 资源文件：解析新位置的依赖并更新**正向**索引
-	guids, err := ParseCardGUIDs(dst)
-	if err != nil || len(guids) == 0 {
-		m.removeDep(src)
-		return
-	}
-	m.FileDeps[dst] = guids
-	m.removeDep(src)
 }
 
 // ---------------------------------------------------------------------------

@@ -247,7 +247,7 @@ func (a *App) startScan(manager *Manager) {
 	a.scanMsg = "正在加载"
 	a.scanTotal = 0
 	a.scanDone = 0
-	a.scanPhase = ""
+	a.scanPhase = "resource"
 	a.scanMu.Unlock()
 
 	go func() {
@@ -284,6 +284,10 @@ func (a *App) startScan(manager *Manager) {
 			result.Reused, result.Parsed, result.Removed, result.ScanDurationMS))
 		if result.ScanWarning != "" {
 			a.emitLog("warn", "index", "索引保存失败（不影响本次使用）："+result.ScanWarning)
+		}
+		if result.IndexUpgradeNote != "" {
+			// v1 → v2 迁移是静默全量重建，日志里说一声，避免用户以为「变慢了」。
+			a.emitLog("info", "index", result.IndexUpgradeNote)
 		}
 	}()
 }
@@ -468,11 +472,8 @@ type TreeNode struct {
 	Type string `json:"type"` // card / folder / hidden
 	Path string `json:"path"`
 	// Rel 相对其所属根的 POSIX 路径。索引回查必须用它，不能用 ID（绝对路径）。
-	Rel  string   `json:"rel,omitempty"`
-	Mods []string `json:"mods"`
-	// ModNames 依赖的 mod 文件名列表
-	ModNames []string `json:"modNames"`
-	Size     int64    `json:"size"`
+	Rel  string `json:"rel,omitempty"`
+	Size int64  `json:"size"`
 	// FolderStats 文件夹统计信息（仅 folder 类型有值）
 	FolderStats *FolderStats `json:"folderStats,omitempty"`
 }
@@ -560,9 +561,8 @@ func (a *App) GetRightTreeData(mode string) string {
 
 // buildTree 递归扫描目录，返回扁平的节点列表（前端按 path 字段做目录匹配）。
 //
-// 扫描过程在后台协程中进行，可能同时修改 Manager 的依赖索引，
+// 扫描过程在后台协程中进行，可能同时修改 Manager 的索引状态，
 // 因此这里必须持有锁，避免数据竞争。
-// depsFor 在解析失败时会回写 DelFileDeps 缓存，故使用写锁。
 func (m *Manager) buildTree(root string, isDel bool, kind ResourceKind) []TreeNode {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -621,14 +621,12 @@ func (m *Manager) buildTreeLocked(root string, isDel bool, kind ResourceKind) []
 			return nil
 		}
 
-		guids := m.depsFor(path, isDel)
 		nodes = append(nodes, TreeNode{
 			ID:   path,
 			Rel:  filepath.ToSlash(rel),
 			Name: info.Name(),
 			Type: "card",
 			Path: filepath.ToSlash(parent),
-			Mods: guids,
 			Size: info.Size(),
 		})
 		return nil
@@ -714,25 +712,6 @@ func dirSize(dir string) (int, int64) {
 		return nil
 	})
 	return count, size
-}
-
-// depsFor 返回文件依赖的 GUID 列表。
-func (m *Manager) depsFor(path string, isDel bool) []string {
-	if isDel {
-		if deps, ok := m.DelFileDeps[path]; ok {
-			return deps
-		}
-		// 隔离区可能是上次会话遗留，实时解析一次
-		if guids, err := ParseCardGUIDs(path); err == nil && len(guids) > 0 {
-			m.DelFileDeps[path] = guids
-			return guids
-		}
-		return nil
-	}
-	if deps, ok := m.FileDeps[path]; ok {
-		return deps
-	}
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -923,7 +902,6 @@ func (a *App) GetInvisibleTreeData() string {
 		nodes := make([]TreeNode, 0, len(folders))
 		for _, rel := range folders {
 			abs := filepath.Join(root, filepath.FromSlash(rel))
-			name := filepath.Base(abs)
 			// 展示相对路径，便于用户辨认位置
 			display := filepath.ToSlash(rel)
 			nodes = append(nodes, TreeNode{
@@ -931,12 +909,10 @@ func (a *App) GetInvisibleTreeData() string {
 				// Rel 是索引 key 用的相对路径（POSIX）。
 				// ID 绝对路径用于展示与定位，Rel 用于精确回查索引 ——
 				// 二者混用会导致「找不到隐藏记录」。
-				Rel:      display,
-				Name:     display,
-				Type:     "hidden",
-				Path:     "",
-				Mods:     []string{},
-				ModNames: []string{name},
+				Rel:  display,
+				Name: display,
+				Type: "hidden",
+				Path: "",
 			})
 		}
 		sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })

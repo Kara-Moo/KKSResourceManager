@@ -16,7 +16,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GenesisAN/illusionsCard/util"
 	"kksresourcemanager/internal/core"
 )
 
@@ -49,21 +48,6 @@ func TestIsCardFileExtensions(t *testing.T) {
 		if core.IsCardFile(n) {
 			t.Errorf("不应识别为卡片：%s", n)
 		}
-	}
-}
-
-// TestJPEGPayload 纯 JPEG 无 payload；EOI 后附加数据能被提取。
-func TestJPEGPayload(t *testing.T) {
-	jpg := makeJPEG(t)
-	if p := cardPayload(jpg); len(p) != 0 {
-		t.Errorf("纯 JPEG 不应有 KKS 附加数据，实际 %d 字节", len(p))
-	}
-
-	fake := []byte("KKS-CARD-PAYLOAD")
-	withTail := append(append([]byte(nil), jpg...), fake...)
-	got := cardPayload(withTail)
-	if !bytes.Equal(got, fake) {
-		t.Fatalf("应提取 EOI 后的数据，实际 %q", got)
 	}
 }
 
@@ -107,102 +91,6 @@ func newTestManagerForThumb() *Manager {
 	m.KksRoot = os.TempDir()
 	m.DelCardsRoot = os.TempDir()
 	return m
-}
-
-// TestJPEGCardWithRealPayload 把真实 PNG 卡的 payload 挂到 JPEG 后面，
-// 解析出的 GUID 必须与原 PNG 一致 —— 证明「JPG 卡对 zipmod 的绑定」
-// 走的是与 PNG 完全相同的数据格式。
-func TestJPEGCardWithRealPayload(t *testing.T) {
-	root := strings.TrimSpace(os.Getenv("KKS_REAL_ROOT"))
-	if root == "" {
-		t.Skip("未设置 KKS_REAL_ROOT，跳过")
-	}
-
-	// 找一张带依赖的真实 PNG 卡
-	var pngPath string
-	var pngGUIDs []string
-	female := filepath.Join(root, "UserData", "chara", "female")
-	filepath.Walk(female, func(path string, info os.FileInfo, err error) error {
-		if err != nil || pngPath != "" || info == nil || info.IsDir() {
-			return nil
-		}
-		if !strings.EqualFold(filepath.Ext(path), ".png") {
-			return nil
-		}
-		g, e := ParseCardGUIDs(path)
-		if e == nil && len(g) > 0 {
-			pngPath, pngGUIDs = path, g
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	if pngPath == "" {
-		t.Skip("未找到带依赖的 PNG 卡")
-	}
-
-	raw, err := os.ReadFile(pngPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload := pngPayload(raw)
-	if len(payload) == 0 {
-		t.Skip("该 PNG 卡没有尾部 payload")
-	}
-
-	jpgData := append(append([]byte(nil), makeJPEG(t)...), payload...)
-	jpgGUIDs, err := ParseCardGUIDsFromBytes(jpgData, "virtual.jpg")
-	if err != nil {
-		t.Fatalf("JPG 解析失败: %v", err)
-	}
-
-	t.Logf("样本 %s：PNG 有 %d 个依赖，JPG 解析出 %d 个",
-		filepath.Base(pngPath), len(pngGUIDs), len(jpgGUIDs))
-	if len(jpgGUIDs) == 0 {
-		t.Error("JPG 携带相同 payload 时应解析出同样的依赖")
-	}
-
-	// 同时确认 payload 的数据确实是 illusionsCard 可识别的格式
-	if _, err := util.PngBytesRead(raw); err != nil {
-		t.Logf("（该卡不走标准 PngBytesRead 路径，依赖来自 ResolveInfo 兜底扫描：%v）", err)
-	}
-}
-
-// TestRealJPGPreview 真实目录里的 .JPG 必须能预览、能被列表识别。
-func TestRealJPGPreview(t *testing.T) {
-	root := strings.TrimSpace(os.Getenv("KKS_REAL_ROOT"))
-	if root == "" {
-		t.Skip("未设置 KKS_REAL_ROOT，跳过")
-	}
-	var jpg string
-	filepath.Walk(filepath.Join(root, "UserData", "chara", "female"),
-		func(path string, info os.FileInfo, err error) error {
-			if err != nil || jpg != "" || info == nil || info.IsDir() {
-				return nil
-			}
-			if core.IsCardFile(path) && !strings.EqualFold(filepath.Ext(path), ".png") {
-				jpg = path
-				return filepath.SkipAll
-			}
-			return nil
-		})
-	if jpg == "" {
-		t.Skip("真实目录下没有 JPG 卡片")
-	}
-	t.Logf("真实 JPG 样本: %s", filepath.Base(jpg))
-
-	img, w, h, err := decodeCardImage(jpg)
-	if err != nil {
-		t.Fatalf("真实 JPG 预览失败: %v", err)
-	}
-	if img == nil || w <= 0 || h <= 0 {
-		t.Errorf("预览尺寸异常 %dx%d", w, h)
-	}
-
-	guids, err := ParseCardGUIDs(jpg)
-	if err != nil {
-		t.Fatalf("真实 JPG 依赖解析失败: %v", err)
-	}
-	t.Logf("预览 %dx%d；依赖 %d 个 zipmod（纯图片为 0 属正常）", w, h, len(guids))
 }
 
 // TestExplorerDirResolution 资源管理器打开的目标必须是受管范围内的规范绝对路径。

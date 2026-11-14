@@ -1,19 +1,18 @@
 package index
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
 
-// setup 构造一个测试用的扫描环境。
+// env 构造一个测试用的扫描环境。
 type env struct {
 	root     string
 	resource string
-	mods     string
 }
 
 func newEnv(t *testing.T) *env {
@@ -23,12 +22,8 @@ func newEnv(t *testing.T) *env {
 	e := &env{
 		root:     root,
 		resource: filepath.Join(root, "UserData", "chara", "female"),
-		mods:     filepath.Join(root, "mods"),
 	}
 	if err := os.MkdirAll(e.resource, 0755); err != nil {
-		t.Fatalf("创建目录失败: %v", err)
-	}
-	if err := os.MkdirAll(e.mods, 0755); err != nil {
 		t.Fatalf("创建目录失败: %v", err)
 	}
 	return e
@@ -46,392 +41,379 @@ func (e *env) writeCard(t *testing.T, name, content string) string {
 	return p
 }
 
-func (e *env) writeZipmod(t *testing.T, name, guid string) string {
-	t.Helper()
-	p := filepath.Join(e.mods, name)
-	if err := os.WriteFile(p, []byte("zipmod:"+guid), 0644); err != nil {
-		t.Fatalf("写文件失败: %v", err)
-	}
-	return p
-}
-
-// newScanner 构造一个使用简单桩函数的 Scanner。
 func (e *env) newScanner() *Scanner {
 	return &Scanner{
-		Root:    e.root,
-		ModsDir: e.mods,
+		Root: e.root,
 		ResourceRoots: map[string]string{
 			"female_card": e.resource,
 		},
-		ParseZipmod: func(path string) (string, []string, error) {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return "", nil, err
-			}
-			s := string(data)
-			guid := ""
-			if len(s) > 7 {
-				guid = s[7:]
-			}
-			return guid, nil, nil
-		},
-		ParseCard: func(path string) ([]string, error) {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return nil, err
-			}
-			// 约定：文件内容形如 "g1,g2"
-			guids := []string{}
-			s := string(data)
-			if s != "" {
-				guids = splitComma(s)
-			}
-			return guids, nil
-		},
-		MatchPlugin: func(path string, guids []string) ([]string, error) {
-			return nil, nil
-		},
 	}
 }
 
-func splitComma(s string) []string {
-	out := []string{}
-	cur := ""
-	for _, c := range s {
-		if c == ',' {
-			if cur != "" {
-				out = append(out, cur)
-			}
-			cur = ""
-			continue
-		}
-		cur += string(c)
-	}
-	if cur != "" {
-		out = append(out, cur)
-	}
-	return out
-}
-
-// TestScanFirstTimeParsesAll 首次扫描应解析全部文件。
-func TestScanFirstTimeParsesAll(t *testing.T) {
+// TestScanFirstTimeIndexesAll 首次扫描应索引全部卡片（只 stat，不解析内容）。
+func TestScanFirstTimeIndexesAll(t *testing.T) {
 	e := newEnv(t)
-	e.writeCard(t, "a.png", "g1")
-	e.writeCard(t, "b.png", "g2")
-	e.writeZipmod(t, "m.zipmod", "guid.m")
+	e.writeCard(t, "a.png", "content-a")
+	e.writeCard(t, "b.png", "content-b")
+	e.writeCard(t, "sub/c.jpg", "content-c")
 
 	s := e.newScanner()
-	idx, derived, stats, err := s.Scan(context.Background(), nil, nil)
+	idx, stats, err := s.Scan(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("扫描失败: %v", err)
 	}
 	if stats.Parsed != 3 {
-		t.Errorf("应解析 3 个文件，实际 %d", stats.Parsed)
+		t.Errorf("首次应更新 3 个条目，实际 %d", stats.Parsed)
 	}
 	if stats.Reused != 0 {
-		t.Errorf("首次扫描复用数应为 0，实际 %d", stats.Reused)
+		t.Errorf("首次复用数应为 0，实际 %d", stats.Reused)
 	}
-	if len(idx.Cards) != 2 {
-		t.Errorf("应有 2 张卡片，实际 %d", len(idx.Cards))
+	if len(idx.Cards) != 3 {
+		t.Fatalf("应有 3 张卡片，实际 %d", len(idx.Cards))
 	}
-	if len(idx.Zipmods) != 1 {
-		t.Errorf("应有 1 个 zipmod，实际 %d", len(idx.Zipmods))
+	entry := idx.Cards[filepath.Join(e.resource, "sub", "c.jpg")]
+	if entry == nil {
+		t.Fatal("子目录卡片未被索引")
 	}
-	// 派生反向图
-	if refs := derived.GlobalDepMap["g1"]; len(refs) != 1 {
-		t.Errorf("g1 应被引用 1 次，实际 %d", len(refs))
+	if entry.Kind != "female_card" {
+		t.Errorf("Kind 应为 female_card，实际 %q", entry.Kind)
+	}
+	if entry.Rel != "sub/c.jpg" {
+		t.Errorf("Rel 应为 sub/c.jpg，实际 %q", entry.Rel)
 	}
 }
 
-// TestScanSecondTimeReusesAll 二次扫描（无变更）应全部复用，零文件读取。
+// TestScanSecondTimeReusesAll 二次扫描应全部复用（Parsed == 0）。
 func TestScanSecondTimeReusesAll(t *testing.T) {
 	e := newEnv(t)
-	e.writeCard(t, "a.png", "g1")
-	e.writeCard(t, "b.png", "g2")
-	e.writeZipmod(t, "m.zipmod", "guid.m")
+	e.writeCard(t, "a.png", "a")
+	e.writeCard(t, "b.png", "b")
 
 	s := e.newScanner()
-	idx, _, _, err := s.Scan(context.Background(), nil, nil)
+	idx, _, err := s.Scan(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("首次扫描失败: %v", err)
 	}
 
-	// 二次扫描传入旧索引
-	idx2, _, stats, err := s.Scan(context.Background(), idx, nil)
+	_, stats, err := s.Scan(context.Background(), idx, nil)
 	if err != nil {
 		t.Fatalf("二次扫描失败: %v", err)
+	}
+	if stats.Reused != 2 {
+		t.Errorf("应复用 2 个条目，实际 %d", stats.Reused)
 	}
 	if stats.Parsed != 0 {
-		t.Errorf("无变更时不应重新解析，实际解析 %d 个", stats.Parsed)
-	}
-	if stats.Reused != 3 {
-		t.Errorf("无变更时应复用 3 个，实际 %d", stats.Reused)
-	}
-	if len(idx2.Cards) != 2 {
-		t.Errorf("卡片数应保持 2，实际 %d", len(idx2.Cards))
+		t.Errorf("热扫描不应更新任何条目（0 次解析），实际 %d", stats.Parsed)
 	}
 }
 
-// TestScanOnlyParsesChanged 单文件变更后只应解析该文件。
-func TestScanOnlyParsesChanged(t *testing.T) {
+// TestScanOnlyIndexesChanged 只更新变化的文件。
+func TestScanOnlyIndexesChanged(t *testing.T) {
 	e := newEnv(t)
-	e.writeCard(t, "a.png", "g1")
-	e.writeCard(t, "b.png", "g2")
+	e.writeCard(t, "a.png", "a")
+	e.writeCard(t, "b.png", "b")
 
 	s := e.newScanner()
-	idx, _, _, err := s.Scan(context.Background(), nil, nil)
+	idx, _, err := s.Scan(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("首次扫描失败: %v", err)
 	}
 
-	// 修改 b.png 的内容与 mtime
-	time.Sleep(10 * time.Millisecond)
-	e.writeCard(t, "b.png", "g9")
+	// 改变一个文件的大小，指纹必变
+	e.writeCard(t, "a.png", "changed-content-longer")
 
-	_, _, stats, err := s.Scan(context.Background(), idx, nil)
+	idx2, stats, err := s.Scan(context.Background(), idx, nil)
 	if err != nil {
-		t.Fatalf("二次扫描失败: %v", err)
+		t.Fatalf("增量扫描失败: %v", err)
 	}
 	if stats.Parsed != 1 {
-		t.Errorf("只应解析 1 个变更文件，实际 %d", stats.Parsed)
+		t.Errorf("应只更新 1 个条目，实际 %d", stats.Parsed)
 	}
 	if stats.Reused != 1 {
-		t.Errorf("应复用 1 个未变更文件，实际 %d", stats.Reused)
-	}
-}
-
-// TestScanDetectsRemoved 删除的文件应从索引移除。
-func TestScanDetectsRemoved(t *testing.T) {
-	e := newEnv(t)
-	e.writeCard(t, "a.png", "g1")
-	e.writeCard(t, "b.png", "g2")
-
-	s := e.newScanner()
-	idx, _, _, err := s.Scan(context.Background(), nil, nil)
-	if err != nil {
-		t.Fatalf("首次扫描失败: %v", err)
-	}
-
-	if err := os.Remove(filepath.Join(e.resource, "b.png")); err != nil {
-		t.Fatalf("删除失败: %v", err)
-	}
-
-	idx2, _, stats, err := s.Scan(context.Background(), idx, nil)
-	if err != nil {
-		t.Fatalf("二次扫描失败: %v", err)
-	}
-	if stats.Removed != 1 {
-		t.Errorf("应检测到 1 个移除，实际 %d", stats.Removed)
-	}
-	if len(idx2.Cards) != 1 {
-		t.Errorf("索引应剩 1 张卡片，实际 %d", len(idx2.Cards))
-	}
-}
-
-// TestScanDetectsAdded 新增的文件应被解析。
-func TestScanDetectsAdded(t *testing.T) {
-	e := newEnv(t)
-	e.writeCard(t, "a.png", "g1")
-
-	s := e.newScanner()
-	idx, _, _, err := s.Scan(context.Background(), nil, nil)
-	if err != nil {
-		t.Fatalf("首次扫描失败: %v", err)
-	}
-
-	e.writeCard(t, "c.png", "g3")
-
-	idx2, _, stats, err := s.Scan(context.Background(), idx, nil)
-	if err != nil {
-		t.Fatalf("二次扫描失败: %v", err)
-	}
-	if stats.Parsed != 1 {
-		t.Errorf("应解析 1 个新增文件，实际 %d", stats.Parsed)
+		t.Errorf("应复用 1 个条目，实际 %d", stats.Reused)
 	}
 	if len(idx2.Cards) != 2 {
-		t.Errorf("索引应有 2 张卡片，实际 %d", len(idx2.Cards))
+		t.Errorf("卡片总数应保持 2，实际 %d", len(idx2.Cards))
 	}
 }
 
-// TestStoreRoundTrip 索引的保存与加载应保持一致。
-func TestStoreRoundTrip(t *testing.T) {
-	base := t.TempDir()
-	store, err := NewStore(base)
-	if err != nil {
-		t.Fatalf("创建 Store 失败: %v", err)
-	}
-
-	idx := NewIndexData("C:\\KK")
-	idx.Cards["C:\\KK\\a.png"] = &CardEntry{
-		Fingerprint: Fingerprint{Size: 100, ModTime: 12345},
-		Kind:        "female_card",
-		Rel:         "a.png",
-		GUIDs:       []string{"g1", "g2"},
-	}
-	idx.Zipmods["C:\\KK\\mods\\m.zipmod"] = &ZipmodEntry{
-		GUID: "guid.m",
-		Deps: []string{"g2"},
-	}
-
-	if err := store.Save(idx); err != nil {
-		t.Fatalf("保存失败: %v", err)
-	}
-	if _, err := os.Stat(store.Path()); err != nil {
-		t.Fatalf("索引文件未生成: %v", err)
-	}
-
-	loaded, err := store.Load("C:\\KK")
-	if err != nil {
-		t.Fatalf("加载失败: %v", err)
-	}
-	if loaded == nil {
-		t.Fatal("加载结果为空")
-	}
-	if len(loaded.Cards) != 1 {
-		t.Errorf("应有 1 张卡片，实际 %d", len(loaded.Cards))
-	}
-	card := loaded.Cards["C:\\KK\\a.png"]
-	if card == nil {
-		t.Fatal("卡片条目丢失")
-	}
-	if card.Size != 100 || card.ModTime != 12345 {
-		t.Errorf("指纹不一致: %+v", card.Fingerprint)
-	}
-	if len(card.GUIDs) != 2 {
-		t.Errorf("GUID 列表不一致: %v", card.GUIDs)
-	}
-}
-
-// TestStoreLoadRejectsDifferentRoot root 不一致时应返回 nil（触发全量重建）。
-func TestStoreLoadRejectsDifferentRoot(t *testing.T) {
-	base := t.TempDir()
-	store, err := NewStore(base)
-	if err != nil {
-		t.Fatalf("创建 Store 失败: %v", err)
-	}
-	idx := NewIndexData("C:\\KK")
-	if err := store.Save(idx); err != nil {
-		t.Fatalf("保存失败: %v", err)
-	}
-
-	loaded, err := store.Load("D:\\Other")
-	if err != nil {
-		t.Fatalf("加载失败: %v", err)
-	}
-	if loaded != nil {
-		t.Error("root 不一致时应返回 nil")
-	}
-}
-
-// TestStoreLoadMissingFile 文件不存在时应返回 nil 且不报错。
-func TestStoreLoadMissingFile(t *testing.T) {
-	base := t.TempDir()
-	store, err := NewStore(base)
-	if err != nil {
-		t.Fatalf("创建 Store 失败: %v", err)
-	}
-	loaded, err := store.Load("C:\\KK")
-	if err != nil {
-		t.Fatalf("不应报错: %v", err)
-	}
-	if loaded != nil {
-		t.Error("文件不存在时应返回 nil")
-	}
-}
-
-// TestStoreLoadCorruptedFile 文件损坏时应返回 nil 而非报错。
-func TestStoreLoadCorruptedFile(t *testing.T) {
-	base := t.TempDir()
-	store, err := NewStore(base)
-	if err != nil {
-		t.Fatalf("创建 Store 失败: %v", err)
-	}
-	if err := os.WriteFile(store.Path(), []byte("{ this is not json"), 0644); err != nil {
-		t.Fatalf("写文件失败: %v", err)
-	}
-	loaded, err := store.Load("C:\\KK")
-	if err != nil {
-		t.Fatalf("损坏文件不应报错: %v", err)
-	}
-	if loaded != nil {
-		t.Error("损坏文件应返回 nil（触发全量重建）")
-	}
-}
-
-// TestDeriveNoDuplicateRefs 派生图不应出现重复引用。
-func TestDeriveNoDuplicateRefs(t *testing.T) {
-	idx := NewIndexData("C:\\KK")
-	// 同一张卡片被"移动"多次：正向索引只有一个 key，反向图也只能有一条
-	idx.Cards["C:\\KK\\a.png"] = &CardEntry{GUIDs: []string{"g1"}}
-	d := Derive(idx)
-	if refs := d.GlobalDepMap["g1"]; len(refs) != 1 {
-		t.Errorf("应只有 1 条引用，实际 %d: %v", len(refs), refs)
-	}
-}
-
-// TestDeriveMissingAndExtra 派生应正确识别缺失与多余的 mod。
-func TestDeriveMissingAndExtra(t *testing.T) {
-	idx := NewIndexData("C:\\KK")
-	idx.Cards["C:\\KK\\a.png"] = &CardEntry{GUIDs: []string{"g1"}}
-	idx.Zipmods["C:\\KK\\mods\\used.zipmod"] = &ZipmodEntry{GUID: "g2"}
-
-	d := Derive(idx)
-	if len(d.MissingGUIDs) != 1 || d.MissingGUIDs[0] != "g1" {
-		t.Errorf("缺失 GUID 应为 [g1]，实际 %v", d.MissingGUIDs)
-	}
-	if len(d.ExtraZipmods) != 1 || d.ExtraZipmods[0] != "g2" {
-		t.Errorf("多余 GUID 应为 [g2]，实际 %v", d.ExtraZipmods)
-	}
-}
-
-// TestHashGUIDSetStable 哈希应与顺序无关。
-func TestHashGUIDSetStable(t *testing.T) {
-	h1 := HashGUIDSet([]string{"a", "b", "c"})
-	h2 := HashGUIDSet([]string{"c", "a", "b"})
-	if h1 != h2 {
-		t.Error("哈希应与顺序无关")
-	}
-	h3 := HashGUIDSet([]string{"a", "b"})
-	if h1 == h3 {
-		t.Error("不同集合的哈希应不同")
-	}
-}
-
-// TestScanCollectsJPGCards JPG/JPEG 卡片必须进入正向索引，
-// 这是 zipmod 引用列表能显示 JPG 的前提（v2.3 JPG 支持）。
-func TestScanCollectsJPGCards(t *testing.T) {
+// TestScanDetectsRemoved 删除检测。
+func TestScanDetectsRemoved(t *testing.T) {
 	e := newEnv(t)
-	e.writeCard(t, "a.png", "g1")
-	e.writeCard(t, "b.JPG", "g1,g2")
-	e.writeCard(t, "c.jpeg", "g2")
-	e.writeCard(t, "readme.txt", "g3")
+	p := e.writeCard(t, "a.png", "a")
+	e.writeCard(t, "b.png", "b")
 
 	s := e.newScanner()
-	idx, derived, stats, err := s.Scan(context.Background(), nil, nil)
+	idx, _, err := s.Scan(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("首次扫描失败: %v", err)
+	}
+
+	if err := os.Remove(p); err != nil {
+		t.Fatalf("删除文件失败: %v", err)
+	}
+	idx2, stats, err := s.Scan(context.Background(), idx, nil)
+	if err != nil {
+		t.Fatalf("增量扫描失败: %v", err)
+	}
+	if stats.Removed != 1 {
+		t.Errorf("应移除 1 个条目，实际 %d", stats.Removed)
+	}
+	if len(idx2.Cards) != 1 {
+		t.Errorf("应剩 1 张卡片，实际 %d", len(idx2.Cards))
+	}
+}
+
+// TestScanDetectsAdded 新增检测。
+func TestScanDetectsAdded(t *testing.T) {
+	e := newEnv(t)
+	e.writeCard(t, "a.png", "a")
+
+	s := e.newScanner()
+	idx, _, err := s.Scan(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("首次扫描失败: %v", err)
+	}
+
+	e.writeCard(t, "b.png", "b")
+	idx2, stats, err := s.Scan(context.Background(), idx, nil)
+	if err != nil {
+		t.Fatalf("增量扫描失败: %v", err)
+	}
+	if stats.Parsed != 1 {
+		t.Errorf("应新增 1 个条目，实际 %d", stats.Parsed)
+	}
+	if len(idx2.Cards) != 2 {
+		t.Errorf("应有 2 张卡片，实际 %d", len(idx2.Cards))
+	}
+}
+
+// TestScanCollectsJPGCards JPG/JPEG 也应被索引（v2.3 支持）。
+func TestScanCollectsJPGCards(t *testing.T) {
+	e := newEnv(t)
+	e.writeCard(t, "a.jpg", "jpg")
+	e.writeCard(t, "b.jpeg", "jpeg")
+	e.writeCard(t, "c.png", "png")
+
+	s := e.newScanner()
+	idx, _, err := s.Scan(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("扫描失败: %v", err)
 	}
-	if stats.Parsed < 3 {
-		t.Errorf("至少应解析 3 张卡片，实际 %d", stats.Parsed)
-	}
 	if len(idx.Cards) != 3 {
-		t.Errorf("索引应含 3 张卡片（PNG+JPG+JPEG），实际 %d", len(idx.Cards))
+		t.Errorf("应索引 3 张卡（png/jpg/jpeg），实际 %d", len(idx.Cards))
 	}
-	for name := range idx.Cards {
-		if strings.EqualFold(filepath.Ext(name), ".txt") {
-			t.Errorf("不该把 txt 收进索引：%s", name)
+}
+
+// TestScanProgressOnlyResource 进度回调只发 resource。
+func TestScanProgressOnlyResource(t *testing.T) {
+	e := newEnv(t)
+	e.writeCard(t, "a.png", "a")
+	e.writeCard(t, "b.png", "b")
+
+	s := e.newScanner()
+	var phases []string
+	var lastDone, lastTotal int
+	progress := func(phase string, done, total int) {
+		phases = append(phases, phase)
+		lastDone, lastTotal = done, total
+	}
+	if _, _, err := s.Scan(context.Background(), nil, progress); err != nil {
+		t.Fatalf("扫描失败: %v", err)
+	}
+	if len(phases) == 0 {
+		t.Fatal("进度回调未被调用")
+	}
+	for _, p := range phases {
+		if p != "resource" {
+			t.Errorf("进度阶段应恒为 resource，实际 %q", p)
 		}
+	}
+	if lastDone != 2 || lastTotal != 2 {
+		t.Errorf("最终进度应为 2/2，实际 %d/%d", lastDone, lastTotal)
+	}
+}
+
+// -------------------- Store --------------------
+
+func TestStoreRoundTrip(t *testing.T) {
+	delRoot := t.TempDir()
+	store, err := NewStore(delRoot)
+	if err != nil {
+		t.Fatalf("NewStore 失败: %v", err)
+	}
+	idx := NewIndexData("C:/KK")
+	idx.Cards["C:/KK/a.png"] = &CardEntry{
+		Fingerprint: FingerprintOf(10, time.Unix(0, 100)),
+		Kind:        "female_card",
+		Rel:         "a.png",
+	}
+	if err := store.Save(idx); err != nil {
+		t.Fatalf("Save 失败: %v", err)
 	}
 
-	// 反向依赖图应同时包含 JPG 引用
-	refs := derived.GlobalDepMap["g1"]
-	hasJPG := false
-	for _, r := range refs {
-		if strings.EqualFold(filepath.Ext(r), ".jpg") {
-			hasJPG = true
-		}
+	lr, err := store.Load("C:/KK")
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
 	}
-	if !hasJPG {
-		t.Errorf("g1 的引用列表应包含 JPG 卡片，实际 %v", refs)
+	if lr.Index == nil {
+		t.Fatal("应加载到索引")
+	}
+	if lr.Index.SchemaVersion != SchemaVersion {
+		t.Errorf("schema 应为 %d，实际 %d", SchemaVersion, lr.Index.SchemaVersion)
+	}
+	if len(lr.Index.Cards) != 1 {
+		t.Errorf("应有 1 张卡，实际 %d", len(lr.Index.Cards))
+	}
+	card := lr.Index.Cards["C:/KK/a.png"]
+	if card == nil {
+		t.Fatal("未找到 a.png")
+	}
+	if card.Size != 10 || card.ModTime != 100 {
+		t.Errorf("指纹未往返：%+v", card.Fingerprint)
+	}
+	if card.Kind != "female_card" || card.Rel != "a.png" {
+		t.Errorf("Kind/Rel 未往返：kind=%q rel=%q", card.Kind, card.Rel)
+	}
+
+	// 磁盘上必须是紧凑编码（fp 字符串 + 单字母字段），否则 2 万卡会超 2MB。
+	data, err := os.ReadFile(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(`"mtime"`)) {
+		t.Error("索引仍使用旧的 size/mtime 对象编码")
+	}
+	if !bytes.Contains(data, []byte(`"fp":"10:100"`)) {
+		t.Errorf("索引未使用紧凑指纹编码：%s", data)
+	}
+}
+
+func TestStoreLoadRejectsDifferentRoot(t *testing.T) {
+	delRoot := t.TempDir()
+	store, _ := NewStore(delRoot)
+	if err := store.Save(NewIndexData("C:/A")); err != nil {
+		t.Fatal(err)
+	}
+	lr, err := store.Load("C:/B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lr.Index != nil {
+		t.Error("root 不同不应复用索引")
+	}
+}
+
+func TestStoreLoadMissingFile(t *testing.T) {
+	store, _ := NewStore(t.TempDir())
+	lr, err := store.Load("C:/KK")
+	if err != nil {
+		t.Fatalf("缺文件不应报错: %v", err)
+	}
+	if lr.Index != nil || lr.Upgraded {
+		t.Error("缺文件应返回空结果")
+	}
+}
+
+func TestStoreLoadCorruptedFile(t *testing.T) {
+	delRoot := t.TempDir()
+	store, _ := NewStore(delRoot)
+	if err := os.WriteFile(store.Path(), []byte("{not-json"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	lr, err := store.Load("C:/KK")
+	if err != nil {
+		t.Fatalf("损坏文件不应报错: %v", err)
+	}
+	if lr.Index != nil {
+		t.Error("损坏文件应触发全量重建")
+	}
+}
+
+// TestStoreLoadV1Migrates v1 旧索引不得 panic、不复用、不被删除。
+func TestStoreLoadV1Migrates(t *testing.T) {
+	delRoot := t.TempDir()
+	store, _ := NewStore(delRoot)
+
+	// 一份典型的 v1 索引：含 zipmods / plugins / pluginDepMap / guids
+	v1 := `{
+	  "schemaVersion": 1,
+	  "root": "C:/KK",
+	  "scannedAt": 1,
+	  "guidSetHash": "abc",
+	  "zipmods": {"C:/KK/mods/a.zipmod": {"size":1,"mtime":2,"guid":"g1","deps":["g2"],"rel":"a.zipmod"}},
+	  "cards": {"C:/KK/a.png": {"size":1,"mtime":2,"kind":"female_card","rel":"a.png","guids":["g1"],"parseErr":""}},
+	  "plugins": {"C:/KK/BepInEx/plugins/a.dll": {"size":1,"mtime":2,"rel":"a.dll","guids":["g1"]}},
+	  "pluginDepMap": {"g1":["a.dll"]},
+	  "isolatedZipmods": {},
+	  "originRel": {}
+	}`
+	if err := os.WriteFile(store.Path(), []byte(v1), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	lr, err := store.Load("C:/KK")
+	if err != nil {
+		t.Fatalf("v1 索引不应报错: %v", err)
+	}
+	if lr.Index != nil {
+		t.Error("v1 索引不应被复用")
+	}
+	if !lr.Upgraded {
+		t.Error("应标记 Upgraded=true")
+	}
+	if lr.OldVersion != 1 {
+		t.Errorf("OldVersion 应为 1，实际 %d", lr.OldVersion)
+	}
+	// 旧文件不得被删除
+	if _, err := os.Stat(store.Path()); err != nil {
+		t.Errorf("旧索引文件不得被删除: %v", err)
+	}
+
+	// 全量重建后覆盖写为 v2
+	idx := NewIndexData("C:/KK")
+	idx.Cards["C:/KK/a.png"] = &CardEntry{
+		Fingerprint: FingerprintOf(1, time.Unix(0, 2)),
+		Kind:        "female_card",
+		Rel:         "a.png",
+	}
+	if err := store.Save(idx); err != nil {
+		t.Fatalf("Save v2 失败: %v", err)
+	}
+	lr2, err := store.Load("C:/KK")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lr2.Index == nil || lr2.Index.SchemaVersion != 2 {
+		t.Errorf("覆盖写后应为可用的 v2 索引，实际 %+v", lr2)
+	}
+}
+
+// TestStoreLoadLegacyV2Entry 早期 v2 索引（size/mtime 对象形式）仍应可复用。
+//
+// 编码压缩只改磁盘格式，不应让已存在的 v2 索引整份作废。
+func TestStoreLoadLegacyV2Entry(t *testing.T) {
+	delRoot := t.TempDir()
+	store, _ := NewStore(delRoot)
+
+	legacy := `{"schemaVersion":2,"root":"C:/KK","scannedAt":1,` +
+		`"cards":{"C:/KK/a.png":{"size":10,"mtime":100,"kind":"female_card","rel":"a.png"}}}`
+	if err := os.WriteFile(store.Path(), []byte(legacy), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	lr, err := store.Load("C:/KK")
+	if err != nil {
+		t.Fatalf("早期 v2 索引不应报错: %v", err)
+	}
+	if lr.Index == nil {
+		t.Fatal("早期 v2 索引应可复用，不应全量重建")
+	}
+	card := lr.Index.Cards["C:/KK/a.png"]
+	if card == nil {
+		t.Fatal("未找到 a.png")
+	}
+	if card.Size != 10 || card.ModTime != 100 || card.Kind != "female_card" || card.Rel != "a.png" {
+		t.Errorf("早期 v2 条目解析错误: %+v", card)
 	}
 }

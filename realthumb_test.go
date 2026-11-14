@@ -37,11 +37,11 @@ func TestRealThumbQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("打开索引失败: %v", err)
 	}
-	old, _ := store.Load(m.KksRoot)
-	if old == nil {
+	lr, _ := store.Load(m.KksRoot)
+	if lr.Index == nil {
 		t.Skip("无索引，请先跑一次扫描")
 	}
-	m.applyIndex(old, index.Derive(old))
+	m.applyIndex(lr.Index)
 
 	// --- 1. 通过 attachManager 启动队列（这是 FIX-01 的修复点）---
 	app := NewApp()

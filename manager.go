@@ -91,18 +91,11 @@ type Manager struct {
 	// DelCardsRoot 隔离区根目录 = KKS_ROOT/../DELCARDS
 	DelCardsRoot string
 
-	// FileDeps 资源文件绝对路径 -> 该文件依赖的 GUID 列表
-	FileDeps map[string][]string
-	// DelFileDeps 隔离区文件绝对路径 -> 该文件依赖的 GUID 列表
-	DelFileDeps map[string][]string
-
 	// Scanned 是否已完成一次全量扫描
 	Scanned bool
 
-	// index 持久化索引（正向数据）
+	// index 持久化索引（卡片指纹）
 	index *index.IndexData
-	// derived 由正向数据派生的反向索引
-	derived *index.Derived
 
 	// thumbs 缩略图生成队列（两级缓存 + 有界并发）
 	thumbs *preview.Queue
@@ -145,8 +138,6 @@ func NewManager(kksRoot string) (*Manager, error) {
 	m := &Manager{
 		KksRoot:      abs,
 		DelCardsRoot: filepath.Join(parent, delCardsDirName),
-		FileDeps:     make(map[string][]string),
-		DelFileDeps:  make(map[string][]string),
 		clipboard:    &Clipboard{},
 		snapshots:    core.NewSnapshotCache(128),
 		covers:       core.NewCoverCache(512),
@@ -257,6 +248,8 @@ type ScanResult struct {
 	Removed int
 	// ScanWarning 保存索引时的警告（不影响本次使用）
 	ScanWarning string
+	// IndexUpgradeNote 旧版本索引升级提示（v1 → v2 时非空）
+	IndexUpgradeNote string
 }
 
 // ScanAll 执行全量扫描：遍历 6 类资源目录下的资源文件，建立索引。
@@ -276,19 +269,21 @@ func (m *Manager) ScanAll(progress func(phase string, done, total int)) ScanResu
 		result.ScanDurationMS = nowMS() - start
 		return result
 	}
-	// 加载旧索引（不存在/损坏/版本不符时返回 nil，触发全量重建）
-	old, _ := store.Load(m.KksRoot)
+	// 加载旧索引（不存在/损坏时全量重建；v1 旧版本作废但保留文件）
+	lr, _ := store.Load(m.KksRoot)
+	old := lr.Index
+	if lr.Upgraded {
+		result.IndexUpgradeNote = fmt.Sprintf(
+			"索引格式已升级（v%d → v%d），本次为全量重建。", lr.OldVersion, index.SchemaVersion)
+	}
 
 	scanner := &index.Scanner{
 		Root:          m.KksRoot,
 		ResourceRoots: m.resourceRoots(),
-		ParseCard: func(path string) ([]string, error) {
-			return ParseCardGUIDs(path)
-		},
 	}
 
 	// --- 执行增量扫描 ---
-	idx, derived, stats, scanErr := scanner.Scan(context.Background(), old, progress)
+	idx, stats, scanErr := scanner.Scan(context.Background(), old, progress)
 	if scanErr != nil {
 		result.FailedFiles = 1
 		result.ScanDurationMS = nowMS() - start
@@ -301,7 +296,7 @@ func (m *Manager) ScanAll(progress func(phase string, done, total int)) ScanResu
 	}
 
 	// --- 写入内存状态 ---
-	m.applyIndex(idx, derived)
+	m.applyIndex(idx)
 
 	result.ResourceCount = len(idx.Cards)
 	result.FailedFiles = stats.Failed
@@ -322,20 +317,8 @@ func (m *Manager) resourceRoots() map[string]string {
 }
 
 // applyIndex 把索引结果写入 Manager 的内存状态。
-//
-// 反向依赖图直接采用派生结果，不再由正向数据二次构建 ——
-// 这保证了两者永远一致（单一真源原则）。
-func (m *Manager) applyIndex(idx *index.IndexData, derived *index.Derived) {
+func (m *Manager) applyIndex(idx *index.IndexData) {
 	m.index = idx
-	m.derived = derived
-
-	m.FileDeps = make(map[string][]string, len(idx.Cards))
-	for path, card := range idx.Cards {
-		if len(card.GUIDs) > 0 {
-			m.FileDeps[path] = card.GUIDs
-		}
-	}
-
 	m.Scanned = true
 }
 
@@ -537,11 +520,6 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 		}
 		res.MovedCards++
 		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[移动资源] %s -> %s", p.src, p.dst)})
-		// 记录隔离区内的依赖信息，供右侧预览使用；随后从正向索引移除该文件
-		if deps, ok := m.FileDeps[p.src]; ok {
-			m.DelFileDeps[p.dst] = deps
-		}
-		m.removeDep(p.src)
 	}
 
 	res.Success = res.FailedCount == 0
@@ -551,11 +529,6 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 		res.Logs = append(res.Logs, OperationLog{"warn", fmt.Sprintf("隔离结束，存在 %d 个失败项，请查看上方日志。", res.FailedCount)})
 	}
 	return res
-}
-
-// removeDep 从正向索引中移除某个文件的全部引用。
-func (m *Manager) removeDep(path string) {
-	delete(m.FileDeps, path)
 }
 
 // classifyResource 判断一个文件属于哪种资源类型，并返回其在源目录下的相对路径。
@@ -730,11 +703,6 @@ func (m *Manager) restoreSingleFile(abs string, kind ResourceKind, res *RestoreR
 	}
 	res.RestoredCard++
 	res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[恢复资源] %s -> %s", abs, dst)})
-	// 把依赖关系写回**正向**索引
-	if deps, ok := m.DelFileDeps[abs]; ok {
-		m.FileDeps[dst] = deps
-		delete(m.DelFileDeps, abs)
-	}
 }
 
 // ensureTargetParent 确保目标文件的父目录存在。

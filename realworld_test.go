@@ -89,36 +89,3 @@ func TestRealPreviewSamples(t *testing.T) {
 	t.Logf("共抽样 %d 个文件，失败 %d 个", sampled, failed)
 }
 
-// TestRealCardGUIDExtraction 在真实卡片上验证依赖 GUID 提取。
-func TestRealCardGUIDExtraction(t *testing.T) {
-	root := realRoot(t)
-	m, err := NewManager(root)
-	if err != nil {
-		t.Fatalf("创建 Manager 失败: %v", err)
-	}
-
-	dir := m.SourceDir(ResourceKinds[0]) // 女卡
-	files := m.collectFiles(dir, func(path string) bool {
-		return strings.EqualFold(filepath.Ext(path), ".png")
-	})
-	if len(files) == 0 {
-		t.Skip("女卡目录为空")
-	}
-
-	withGUID := 0
-	for i, path := range files {
-		if i >= 20 {
-			break
-		}
-		guids, err := ParseCardGUIDs(path)
-		if err != nil {
-			t.Logf("解析失败 %s: %v", filepath.Base(path), err)
-			continue
-		}
-		if len(guids) > 0 {
-			withGUID++
-			t.Logf("%s -> %d 个 GUID: %v", filepath.Base(path), len(guids), guids)
-		}
-	}
-	t.Logf("抽样中 %d 个卡片成功提取到依赖 GUID", withGUID)
-}
