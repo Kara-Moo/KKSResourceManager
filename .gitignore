@@ -4,6 +4,8 @@ build/bin/
 # 交付给用户的最新可执行文件（仓库内保留一份）
 !dist/
 !dist/*.exe
+# 发布用源码包（作为 release 资产上传，不入库）
+dist/*.zip
 # 参考源码（仅供溯源，不参与编译）
 reference/
 # Node 依赖（仅前端测试用）
