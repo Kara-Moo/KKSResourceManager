@@ -95,8 +95,7 @@ func (m *Manager) CmdUndo(txID string) (tx.UndoResult, error) {
 	if err != nil {
 		return res, err
 	}
-	// 撤销后刷新索引
-	m.rebuildDepIndex()
+	// 撤销后刷新缓存
 	m.invalidateCaches()
 	return res, nil
 }

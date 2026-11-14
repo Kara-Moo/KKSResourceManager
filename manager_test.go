@@ -56,7 +56,7 @@ func TestNewManagerCreatesDelDirs(t *testing.T) {
 
 	expected := []string{
 		"DEL-female_card", "DEL-male_card", "DEL-scene", "DEL-pose",
-		"DEL-coord_f", "DEL-coord_m", "DEL-zipmod",
+		"DEL-coord_f", "DEL-coord_m",
 	}
 	for _, name := range expected {
 		p := filepath.Join(env.delRoot, name)
@@ -68,6 +68,10 @@ func TestNewManagerCreatesDelDirs(t *testing.T) {
 		if !info.IsDir() {
 			t.Errorf("%s 应为目录", name)
 		}
+	}
+	// v2.4：不再管理 zipmod，因此不再创建 DEL-zipmod 目录
+	if _, err := os.Stat(filepath.Join(env.delRoot, "DEL-zipmod")); !os.IsNotExist(err) {
+		t.Errorf("DEL-zipmod 不应被创建")
 	}
 }
 
@@ -97,79 +101,9 @@ func TestClassifyResource(t *testing.T) {
 // 依赖图与隔离
 // ---------------------------------------------------------------------------
 
-func TestIsolateKeepsSharedMod(t *testing.T) {
-	env := newTestEnv(t)
 
-	cardA := env.femaleCard("a.png")
-	cardB := env.femaleCard("b.png")
-	writeFile(t, cardA, "card A")
-	writeFile(t, cardB, "card B")
 
-	// 手工构造依赖图：两个文件都依赖同一个 GUID
-	m := env.manager
-	m.Scanned = true
-	m.FileDeps[cardA] = []string{"shared.guid"}
-	m.FileDeps[cardB] = []string{"shared.guid"}
-	m.derive()
 
-	// 模拟一个 mods 目录中的 zipmod
-	modPath := filepath.Join(m.ModsDir(), "shared.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["shared.guid"] = modPath
-
-	// 只隔离 cardA
-	res := m.Isolate([]string{cardA})
-
-	if res.MovedCards != 1 {
-		t.Errorf("应移动 1 个资源，实际 %d，日志: %v", res.MovedCards, res.Logs)
-	}
-	if res.MovedMods != 0 {
-		t.Errorf("共享 MOD 不应被移动，实际移动了 %d 个", res.MovedMods)
-	}
-	if res.KeptMods != 1 {
-		t.Errorf("共享 MOD 应被保留，实际保留 %d 个", res.KeptMods)
-	}
-	// zipmod 必须仍在原处
-	if _, err := os.Stat(modPath); err != nil {
-		t.Errorf("共享 zipmod 不应被移走: %v", err)
-	}
-	// cardA 应已移入隔离区且保留目录结构
-	isolated := filepath.Join(m.DelDir(ResourceKinds[0]), "a.png")
-	if _, err := os.Stat(isolated); err != nil {
-		t.Errorf("资源未正确移入隔离区: %v", err)
-	}
-}
-
-func TestIsolateMovesOrphanMod(t *testing.T) {
-	env := newTestEnv(t)
-
-	card := env.femaleCard("only.png")
-	writeFile(t, card, "card")
-
-	m := env.manager
-	m.Scanned = true
-	m.FileDeps[card] = []string{"orphan.guid"}
-	m.derive()
-
-	modPath := filepath.Join(m.ModsDir(), "orphan.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["orphan.guid"] = modPath
-
-	res := m.Isolate([]string{card})
-
-	if res.MovedMods != 1 {
-		t.Errorf("孤立 MOD 应被移动，实际移动 %d 个，日志: %v", res.MovedMods, res.Logs)
-	}
-	// 原位置应不存在
-	if _, err := os.Stat(modPath); !os.IsNotExist(err) {
-		t.Error("孤立 zipmod 应从 mods 目录移走")
-	}
-	// 应出现在隔离区（扁平化）
-	isolated := filepath.Join(m.DelZipmodDir(), "orphan.zipmod")
-	if _, err := os.Stat(isolated); err != nil {
-		t.Errorf("zipmod 未移入隔离区: %v", err)
-	}
-}
 
 func TestIsolatePreservesDirectoryStructure(t *testing.T) {
 	env := newTestEnv(t)
@@ -273,76 +207,9 @@ func TestIsolateWithoutScan(t *testing.T) {
 	}
 }
 
-// TestIsolateAcrossBatches 验证分批隔离时的依赖计数仍然准确：
-// 第一批隔离后，共享 mod 因仍被第二批的文件引用而保留；
-// 第二批隔离后 mod 才彻底孤立并被移走。
-func TestIsolateAcrossBatches(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
 
-	cardA := env.femaleCard("a.png")
-	cardB := env.femaleCard("b.png")
-	writeFile(t, cardA, "a")
-	writeFile(t, cardB, "b")
 
-	m.Scanned = true
-	m.FileDeps[cardA] = []string{"shared.guid"}
-	m.FileDeps[cardB] = []string{"shared.guid"}
-	m.derive()
 
-	modPath := filepath.Join(m.ModsDir(), "shared.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["shared.guid"] = modPath
-
-	// 第一批：只隔离 cardA
-	res1 := m.Isolate([]string{cardA})
-	if res1.MovedMods != 0 {
-		t.Errorf("第一批后共享 mod 不应移动，实际移动 %d 个", res1.MovedMods)
-	}
-	// cardA 已从依赖图中移除，cardB 仍在
-	if refs := m.GlobalDepMap["shared.guid"]; len(refs) != 1 || refs[0] != cardB {
-		t.Errorf("依赖图应只剩 cardB 的引用，实际 %v", refs)
-	}
-
-	// 第二批：隔离 cardB —— 此时 mod 才彻底孤立
-	res2 := m.Isolate([]string{cardB})
-	if res2.MovedMods != 1 {
-		t.Errorf("第二批后孤立 mod 应被移动，实际移动 %d 个，日志 %v", res2.MovedMods, res2.Logs)
-	}
-	if _, err := os.Stat(modPath); !os.IsNotExist(err) {
-		t.Error("孤立 mod 应已从 mods 目录移走")
-	}
-}
-
-// TestIsolateMultipleSelectedSharingMod 验证同批次内多选时的判断：
-// 若 mod 被本次勾选的两个文件共同引用，且没有第三方引用，则应被移走。
-func TestIsolateMultipleSelectedSharingMod(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
-
-	cardA := env.femaleCard("a.png")
-	cardB := env.femaleCard("b.png")
-	writeFile(t, cardA, "a")
-	writeFile(t, cardB, "b")
-
-	m.Scanned = true
-	m.FileDeps[cardA] = []string{"shared.guid"}
-	m.FileDeps[cardB] = []string{"shared.guid"}
-	m.derive()
-
-	modPath := filepath.Join(m.ModsDir(), "shared.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["shared.guid"] = modPath
-
-	// 同时勾选两个文件，它们是该 GUID 的全部引用者
-	res := m.Isolate([]string{cardA, cardB})
-	if res.MovedCards != 2 {
-		t.Errorf("应移动 2 个资源，实际 %d", res.MovedCards)
-	}
-	if res.MovedMods != 1 {
-		t.Errorf("无外部引用时 mod 应被移动，实际移动 %d 个，日志 %v", res.MovedMods, res.Logs)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // 恢复
@@ -378,35 +245,7 @@ func TestRestoreCard(t *testing.T) {
 	}
 }
 
-func TestRestoreZipmod(t *testing.T) {
-	env := newTestEnv(t)
 
-	card := env.femaleCard("a.png")
-	writeFile(t, card, "card")
-
-	m := env.manager
-	m.Scanned = true
-	m.FileDeps[card] = []string{"lonely.guid"}
-	m.derive()
-	modPath := filepath.Join(m.ModsDir(), "lonely.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["lonely.guid"] = modPath
-
-	m.Isolate([]string{card})
-
-	isolatedMod := filepath.Join(m.DelZipmodDir(), "lonely.zipmod")
-	if _, err := os.Stat(isolatedMod); err != nil {
-		t.Fatalf("zipmod 未进入隔离区: %v", err)
-	}
-
-	res := m.Restore([]string{isolatedMod})
-	if res.RestoredMod != 1 {
-		t.Fatalf("应恢复 1 个 MOD，实际 %d，日志: %v", res.RestoredMod, res.Logs)
-	}
-	if _, err := os.Stat(modPath); err != nil {
-		t.Errorf("zipmod 未回到 mods 目录: %v", err)
-	}
-}
 
 func TestRestoreSkipsExistingTarget(t *testing.T) {
 	env := newTestEnv(t)
@@ -433,26 +272,7 @@ func TestRestoreSkipsExistingTarget(t *testing.T) {
 	}
 }
 
-func TestRestoreZipmodSkipsDuplicateName(t *testing.T) {
-	env := newTestEnv(t)
 
-	m := env.manager
-	m.Scanned = true
-
-	// 隔离区放一个 zipmod，mods 目录已有同名文件
-	isolated := filepath.Join(m.DelZipmodDir(), "same.zipmod")
-	writeFile(t, isolated, "isolated")
-	writeFile(t, filepath.Join(m.ModsDir(), "same.zipmod"), "existing")
-
-	res := m.Restore([]string{isolated})
-	if res.RestoredMod != 0 {
-		t.Errorf("mods 中存在同名文件时应跳过，实际恢复 %d 个", res.RestoredMod)
-	}
-	data, err := os.ReadFile(filepath.Join(m.ModsDir(), "same.zipmod"))
-	if err != nil || string(data) != "existing" {
-		t.Errorf("mods 中已有文件不应被覆盖，实际内容 %q", string(data))
-	}
-}
 
 // ---------------------------------------------------------------------------
 // 辅助

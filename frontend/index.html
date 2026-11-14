@@ -1473,6 +1473,14 @@
                 div.appendChild(sizeSpan);
             }
 
+            if (item.spec === 'zipmod') {
+                // 历史遗留：本工具已不再管理 zipmod，只展示、禁止还原/彻底删除
+                const legacyTag = document.createElement('span');
+                legacyTag.className = 'hidden-tag';
+                legacyTag.innerText = '历史遗留，请手动处理';
+                div.appendChild(legacyTag);
+            }
+
             frag.appendChild(div);
         });
 
@@ -1514,6 +1522,7 @@
                     rel: e.rel,
                     trashRel: e.rel,
                     originalAbs: e.originalAbs,
+                    spec: e.spec || '',
                 }));
                 leftRoot = '回收站';
                 renderList('left');
@@ -1800,7 +1809,14 @@
             showAlert('请先勾选要还原的条目。');
             return;
         }
-        const rels = Array.from(selected);
+        // 历史遗留 zipmod 只展示、不操作
+        const picked = leftNodes.filter(n => selected.has(n.id));
+        const rels = picked.filter(n => n.spec !== 'zipmod').map(n => n.trashRel);
+        const blocked = picked.length - rels.length;
+        if (blocked > 0) {
+            toast(`${blocked} 个历史遗留 zipmod 已跳过，请手动处理`, 'warn');
+        }
+        if (rels.length === 0) return;
         const res = await callBackend('CmdTrashRestore', rels);
         if (!res.success) {
             showAlert(res.message || '还原失败。');
@@ -1822,8 +1838,15 @@
             showAlert('请先勾选要彻底删除的条目。');
             return;
         }
-        const rels = Array.from(selected);
-        const first = leftNodes.find(n => leftSelected.has(n.id));
+        // 历史遗留 zipmod 只展示、不操作
+        const picked = leftNodes.filter(n => leftSelected.has(n.id));
+        const rels = picked.filter(n => n.spec !== 'zipmod').map(n => n.trashRel);
+        const blocked = picked.length - rels.length;
+        if (blocked > 0) {
+            toast(`${blocked} 个历史遗留 zipmod 已跳过，请手动处理`, 'warn');
+        }
+        if (rels.length === 0) return;
+        const first = picked.find(n => n.spec !== 'zipmod');
         const name = first ? first.name : '';
 
         // 二次确认 + 输入名称

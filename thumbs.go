@@ -97,3 +97,10 @@ func (m *Manager) ThumbStats() preview.Stats {
 	}
 	return m.thumbs.Stats()
 }
+
+// RequestThumb 请求一张缩略图（只查缓存，未命中返回 pending）。
+func (m *Manager) RequestThumb(abs string) (key, dataURI string, pending bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.thumbRequest(abs, true)
+}

@@ -6,9 +6,7 @@ package main
 //
 //  1. 隔离卡片时保留原始相对目录结构，先创建目标目录再移动文件；
 //     源目录即使变空也绝不删除。
-//  2. 只有当某个 GUID 在“移除被勾选文件的引用后”彻底无人引用时，才移动对应 zipmod；
-//     只要还有任何一个未勾选文件引用它，就原地保留。
-//  3. 恢复时把文件放回原位（目录不存在则重建）；DEL 区空目录可清理，游戏目录永不删除。
+//  2. 恢复时把文件放回原位（目录不存在则重建）；DEL 区空目录可清理，游戏目录永不删除。
 
 import (
 	"context"
@@ -23,7 +21,6 @@ import (
 
 	"kksresourcemanager/internal/core"
 	"kksresourcemanager/internal/index"
-	"kksresourcemanager/internal/plugin"
 	"kksresourcemanager/internal/preview"
 	"kksresourcemanager/internal/tx"
 )
@@ -40,7 +37,6 @@ const (
 	ModePose       = "pose"
 	ModeCoordF     = "coord_f"
 	ModeCoordM     = "coord_m"
-	ModeZipmod     = "zipmod"
 )
 
 // ResourceKind 描述一种资源在游戏目录中的位置及其隔离区。
@@ -69,14 +65,8 @@ var ResourceKinds = []ResourceKind{
 	{ModeCoordM, "男性服装", filepath.Join("UserData", "coordinate", "male"), "DEL-coord_m", ".png"},
 }
 
-// zipmod 隔离目录（扁平化，不保留 mods 内部层级）
-const (
-	delZipmodDirName = "DEL-zipmod"
-	// delCardsDirName 隔离区根目录名，位于 KKS_ROOT 的父目录下
-	delCardsDirName = "DELCARDS"
-	// zipmodExt zipmod 文件扩展名
-	zipmodExt = ".zipmod"
-)
+// delCardsDirName 隔离区根目录名，位于 KKS_ROOT 的父目录下
+const delCardsDirName = "DELCARDS"
 
 // KindByMode 按 mode 取资源类型定义。
 func KindByMode(mode string) (ResourceKind, bool) {
@@ -101,31 +91,18 @@ type Manager struct {
 	// DelCardsRoot 隔离区根目录 = KKS_ROOT/../DELCARDS
 	DelCardsRoot string
 
-	// ZipmodDB GUID -> zipmod 绝对路径
-	ZipmodDB map[string]string
-	// GlobalDepMap GUID -> 引用该 GUID 的文件绝对路径列表
-	GlobalDepMap map[string][]string
-
 	// FileDeps 资源文件绝对路径 -> 该文件依赖的 GUID 列表
 	FileDeps map[string][]string
 	// DelFileDeps 隔离区文件绝对路径 -> 该文件依赖的 GUID 列表
 	DelFileDeps map[string][]string
-	// ModDeps zipmod 绝对路径 -> 该 zipmod 声明依赖的 GUID 列表
-	ModDeps map[string][]string
 
 	// Scanned 是否已完成一次全量扫描
 	Scanned bool
 
-	// index 持久化索引（正向数据 + 插件信息）
+	// index 持久化索引（正向数据）
 	index *index.IndexData
 	// derived 由正向数据派生的反向索引
 	derived *index.Derived
-	// PluginDepMap GUID -> 硬编码引用它的 DLL 相对路径（第二道防线的依据）
-	PluginDepMap map[string][]string
-
-	// guidOfPath zipmod 绝对路径 -> GUID（反向表，derive 时建好）
-	// 用于 O(1) 查出「这个 zipmod 被多少文件占用」。
-	guidOfPath map[string]string
 
 	// thumbs 缩略图生成队列（两级缓存 + 有界并发）
 	thumbs *preview.Queue
@@ -168,13 +145,8 @@ func NewManager(kksRoot string) (*Manager, error) {
 	m := &Manager{
 		KksRoot:      abs,
 		DelCardsRoot: filepath.Join(parent, delCardsDirName),
-		ZipmodDB:     make(map[string]string),
-		GlobalDepMap: make(map[string][]string),
 		FileDeps:     make(map[string][]string),
 		DelFileDeps:  make(map[string][]string),
-		ModDeps:      make(map[string][]string),
-		PluginDepMap: make(map[string][]string),
-		guidOfPath:   make(map[string]string),
 		clipboard:    &Clipboard{},
 		snapshots:    core.NewSnapshotCache(128),
 		covers:       core.NewCoverCache(512),
@@ -204,11 +176,10 @@ func (m *Manager) ensureDelDirsLocked() error {
 	if err := os.MkdirAll(m.DelCardsRoot, 0755); err != nil {
 		return fmt.Errorf("创建隔离区失败: %w", err)
 	}
-	names := make([]string, 0, len(ResourceKinds)+1)
+	names := make([]string, 0, len(ResourceKinds))
 	for _, k := range ResourceKinds {
 		names = append(names, k.DelName)
 	}
-	names = append(names, delZipmodDirName)
 	for _, name := range names {
 		p := filepath.Join(m.DelCardsRoot, name)
 		if err := os.MkdirAll(p, 0755); err != nil {
@@ -218,14 +189,9 @@ func (m *Manager) ensureDelDirsLocked() error {
 	return nil
 }
 
-// ModsDir 返回游戏 mods 目录。
-func (m *Manager) ModsDir() string {
-	return filepath.Join(m.KksRoot, "mods")
-}
-
 // RequiredDirs 是扫描所必需、缺失即判定为「加载错误」的目录。
 //
-// 判定依据：这些目录承载了核心资源与 zipmod 索引，缺失说明选错了根目录。
+// 判定依据：这些目录承载了核心资源，缺失说明选错了根目录。
 // 注意 coordinate/male 属于可选目录 —— 很多 KKS 安装根本没有男装资源库，
 // 其缺失只应导致该类型列表为空，而不应阻断整个程序。
 var RequiredDirs = []string{
@@ -274,23 +240,14 @@ func (m *Manager) DelDir(kind ResourceKind) string {
 	return filepath.Join(m.DelCardsRoot, kind.DelName)
 }
 
-// DelZipmodDir 返回 zipmod 隔离目录。
-func (m *Manager) DelZipmodDir() string {
-	return filepath.Join(m.DelCardsRoot, delZipmodDirName)
-}
-
 // ---------------------------------------------------------------------------
 // 全局扫描
 // ---------------------------------------------------------------------------
 
 // ScanResult 汇总一次全量扫描的结果。
 type ScanResult struct {
-	ZipmodCount    int
 	ResourceCount  int
-	DepGUIDCount   int
 	FailedFiles    int
-	FailedZipmods  int
-	MissingMods    []string
 	ScanDurationMS int64
 	// Reused 本次复用的索引条目数（零 IO）
 	Reused int
@@ -302,11 +259,9 @@ type ScanResult struct {
 	ScanWarning string
 }
 
-// ScanAll 执行全量扫描：
-//   - 遍历 mods 下所有 zipmod，解析 manifest.xml 建立 GUID -> 路径索引；
-//   - 遍历 6 类资源目录下的所有资源文件，提取其依赖 GUID，构建全局依赖图。
+// ScanAll 执行全量扫描：遍历 6 类资源目录下的资源文件，建立索引。
 //
-// progress 回调会收到阶段名（zipmod / resource）、已完成数与总数，供前端渲染进度条。
+// progress 回调会收到阶段名（resource）、已完成数与总数，供前端渲染进度条。
 func (m *Manager) ScanAll(progress func(phase string, done, total int)) ScanResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -326,23 +281,9 @@ func (m *Manager) ScanAll(progress func(phase string, done, total int)) ScanResu
 
 	scanner := &index.Scanner{
 		Root:          m.KksRoot,
-		ModsDir:       m.ModsDir(),
 		ResourceRoots: m.resourceRoots(),
-		PluginRoots:   m.pluginRoots(),
-		ParseZipmod: func(path string) (string, []string, error) {
-			manifest, err := ReadModManifest(path)
-			guid := strings.TrimSpace(manifest.GUID)
-			deps := ReadModManifestDependencies(path)
-			if err != nil && guid == "" {
-				return "", nil, err
-			}
-			return guid, deps, nil
-		},
 		ParseCard: func(path string) ([]string, error) {
 			return ParseCardGUIDs(path)
-		},
-		MatchPlugin: func(path string, guids []string) ([]string, error) {
-			return plugin.MatchGUIDsInFile(path, guids)
 		},
 	}
 
@@ -354,13 +295,6 @@ func (m *Manager) ScanAll(progress func(phase string, done, total int)) ScanResu
 		return result
 	}
 
-	// --- 插件扫描（第二道防线的数据来源） ---
-	guidSet := index.GUIDSetOf(idx)
-	if err := scanner.PluginMatches(context.Background(), idx, guidSet, progress); err == nil {
-		// 插件索引更新后重新派生
-		derived = index.Derive(idx)
-	}
-
 	// --- 原子保存索引（失败只记警告，不影响本次使用） ---
 	if err := store.Save(idx); err != nil {
 		result.ScanWarning = err.Error()
@@ -369,11 +303,8 @@ func (m *Manager) ScanAll(progress func(phase string, done, total int)) ScanResu
 	// --- 写入内存状态 ---
 	m.applyIndex(idx, derived)
 
-	result.ZipmodCount = len(idx.Zipmods)
 	result.ResourceCount = len(idx.Cards)
-	result.DepGUIDCount = len(derived.GlobalDepMap)
 	result.FailedFiles = stats.Failed
-	result.MissingMods = derived.MissingGUIDs
 	result.ScanDurationMS = nowMS() - start
 	result.Reused = stats.Reused
 	result.Parsed = stats.Parsed
@@ -390,14 +321,6 @@ func (m *Manager) resourceRoots() map[string]string {
 	return roots
 }
 
-// pluginRoots 返回 BepInEx 插件目录（第二道防线的扫描范围）。
-func (m *Manager) pluginRoots() []string {
-	return []string{
-		filepath.Join(m.KksRoot, "BepInEx", "plugins"),
-		filepath.Join(m.KksRoot, "BepInEx", "core"),
-	}
-}
-
 // applyIndex 把索引结果写入 Manager 的内存状态。
 //
 // 反向依赖图直接采用派生结果，不再由正向数据二次构建 ——
@@ -406,35 +329,10 @@ func (m *Manager) applyIndex(idx *index.IndexData, derived *index.Derived) {
 	m.index = idx
 	m.derived = derived
 
-	m.GlobalDepMap = derived.GlobalDepMap
-
-	m.ZipmodDB = make(map[string]string, len(derived.GuidToZipmod))
-	for guid, path := range derived.GuidToZipmod {
-		m.ZipmodDB[guid] = path
-	}
-
 	m.FileDeps = make(map[string][]string, len(idx.Cards))
 	for path, card := range idx.Cards {
 		if len(card.GUIDs) > 0 {
 			m.FileDeps[path] = card.GUIDs
-		}
-	}
-
-	m.ModDeps = make(map[string][]string, len(idx.Zipmods))
-	for path, z := range idx.Zipmods {
-		if len(z.Deps) > 0 {
-			m.ModDeps[path] = z.Deps
-		}
-	}
-
-	m.PluginDepMap = idx.PluginDepMap
-
-	// guidOfPath 反向表：zipmod 绝对路径 -> GUID
-	// 用于 O(1) 查出「这个 zipmod 被多少文件占用」（红线 N2）。
-	m.guidOfPath = make(map[string]string, len(idx.Zipmods))
-	for path, z := range idx.Zipmods {
-		if z.GUID != "" {
-			m.guidOfPath[path] = z.GUID
 		}
 	}
 
@@ -502,16 +400,13 @@ type OperationLog struct {
 
 // IsolateResult 隔离操作结果。
 type IsolateResult struct {
-	Success       bool           `json:"success"`
-	MovedCards    int            `json:"movedCards"`
-	MovedMods     int            `json:"movedMods"`
-	KeptMods      int            `json:"keptMods"`
-	FailedCount   int            `json:"failedCount"`
-	Logs          []OperationLog `json:"logs"`
-	GlobalDepSize int            `json:"globalDepSize"`
+	Success     bool           `json:"success"`
+	MovedCards  int            `json:"movedCards"`
+	FailedCount int            `json:"failedCount"`
+	Logs        []OperationLog `json:"logs"`
 }
 
-// Isolate 将选中的资源文件移动到隔离区，并按依赖图决定哪些 zipmod 可以一并移走。
+// Isolate 将选中的资源文件移动到隔离区。
 //
 // cardPaths 为资源文件的绝对路径集合。
 func (m *Manager) Isolate(cardPaths []string) IsolateResult {
@@ -559,14 +454,13 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 	// 文件夹会被展开为其下的全部文件（保持原有相对层级），
 	// 这样目录结构天然保留，依赖图的处理逻辑也可完全复用。
 	type movePlan struct {
-		src      string
-		kind     ResourceKind
-		relDir   string
-		dst      string
-		selected bool
+		src    string
+		kind   ResourceKind
+		relDir string
+		dst    string
 	}
 	plans := make([]movePlan, 0, len(cardPaths))
-	selectedSet := make(map[string]bool, len(cardPaths))
+	selectedFolders, selectedFiles := 0, 0
 
 	for _, src := range cardPaths {
 		kind, relDir, ok := m.classifyResource(src)
@@ -586,11 +480,12 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 		if !info.IsDir() {
 			dst := filepath.Join(m.DelDir(kind), relDir, filepath.Base(src))
 			plans = append(plans, movePlan{src: src, kind: kind, relDir: relDir, dst: dst})
-			selectedSet[src] = true
+			selectedFiles++
 			continue
 		}
 
 		// 文件夹：展开为文件列表
+		selectedFolders++
 		files, err := collectFilesStrict(src, func(path string) bool {
 			return core.IsCardFile(path)
 		})
@@ -614,21 +509,12 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 			_, fRelDir, _ := m.classifyResource(f)
 			dst := filepath.Join(m.DelDir(kind), fRelDir, filepath.Base(f))
 			plans = append(plans, movePlan{src: f, kind: kind, relDir: fRelDir, dst: dst})
-			selectedSet[f] = true
 		}
 	}
 
 	if len(plans) == 0 {
 		res.Logs = append(res.Logs, OperationLog{"error", "没有可隔离的有效文件。"})
 		return res
-	}
-
-	// --- 2. 收集被勾选文件依赖的 GUID ---
-	selectedGUIDs := make(map[string]bool)
-	for _, p := range plans {
-		for _, guid := range m.FileDeps[p.src] {
-			selectedGUIDs[guid] = true
-		}
 	}
 
 	// --- 3. 移动资源文件（保留目录结构） ---
@@ -658,97 +544,16 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 		m.removeDep(p.src)
 	}
 
-	// 资源移动完成后重新派生反向依赖图。
-	// 必须在下一步「判定哪些 zipmod 可移走」之前完成 ——
-	// 否则判定会读到尚未移除旧引用的过期数据，导致本该可隔离的 mod 被误保留。
-	m.rebuildDepIndex()
-
-	// --- 4. 判定哪些 zipmod 可以安全移走 ---
-	// 关键：移除被勾选文件的引用后，若 GUID 仍被任何其它文件引用，则原地保留。
-	for guid := range selectedGUIDs {
-		modPath, ok := m.ZipmodDB[guid]
-		if !ok {
-			res.Logs = append(res.Logs, OperationLog{"info", fmt.Sprintf("[跳过 MOD] GUID %s 本地没有对应 zipmod。", guid)})
-			continue
-		}
-		// mod 本身是否已被移走
-		if _, statErr := os.Stat(modPath); statErr != nil {
-			continue
-		}
-		// 三道防线统一判定（卡片依赖 / 插件依赖 / mod 间依赖）
-		// §8.6：这是 zipmod 隔离的唯一判定入口
-		if ok, reason := m.checkZipmodMovable(guid, selectedSet); !ok {
-			res.KeptMods++
-			res.Logs = append(res.Logs, OperationLog{
-				"warn",
-				fmt.Sprintf("[保留 MOD] %s: %s", filepath.Base(modPath), reason),
-			})
-			continue
-		}
-
-		dst := filepath.Join(m.DelZipmodDir(), filepath.Base(modPath))
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			res.FailedCount++
-			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("创建 zipmod 隔离目录失败: %v", err)})
-			continue
-		}
-		if _, err := os.Stat(dst); err == nil {
-			res.FailedCount++
-			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("[跳过 MOD] 隔离区已存在同名文件: %s", dst)})
-			continue
-		}
-		if err := moveFile(modPath, dst); err != nil {
-			res.FailedCount++
-			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("移动 zipmod 失败 %s: %v", modPath, err)})
-			continue
-		}
-		res.MovedMods++
-		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[移动 MOD] %s (GUID %s) -> %s", filepath.Base(modPath), guid, dst)})
-		delete(m.ZipmodDB, guid)
-	}
-
-	res.GlobalDepSize = len(m.GlobalDepMap)
 	res.Success = res.FailedCount == 0
 	if res.Success {
-		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("隔离完成：资源 %d 个，MOD %d 个，保留 MOD %d 个。", res.MovedCards, res.MovedMods, res.KeptMods)})
+		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("隔离完成：资源 %d 个（%d 个文件夹 / %d 个文件）。", res.MovedCards, selectedFolders, selectedFiles)})
 	} else {
 		res.Logs = append(res.Logs, OperationLog{"warn", fmt.Sprintf("隔离结束，存在 %d 个失败项，请查看上方日志。", res.FailedCount)})
 	}
 	return res
 }
 
-// remainingReferrers 计算移除 selected 之后仍引用该 GUID 的文件列表。
-func (m *Manager) remainingReferrers(guid string, selected map[string]bool) []string {
-	var remaining []string
-	for _, ref := range m.GlobalDepMap[guid] {
-		if selected[ref] {
-			continue
-		}
-		remaining = append(remaining, ref)
-	}
-	return remaining
-}
-
-// modDependents 返回依赖该 GUID 的其它 zipmod 路径。
-func (m *Manager) modDependents(guid string) []string {
-	var dependents []string
-	for modPath, deps := range m.ModDeps {
-		for _, dep := range deps {
-			if dep == guid {
-				dependents = append(dependents, modPath)
-				break
-			}
-		}
-	}
-	sort.Strings(dependents)
-	return dependents
-}
-
 // removeDep 从正向索引中移除某个文件的全部引用。
-//
-// 注意：这里只删正向数据 FileDeps[path]，
-// 反向图 GlobalDepMap 由 derive() 现算，不需要也不应该在此增量修补
-// （历史缺陷 §3.6：增量 append 导致同一文件被移动 N 次后积累 N 条重复引用）。
 func (m *Manager) removeDep(path string) {
 	delete(m.FileDeps, path)
 }
@@ -786,14 +591,13 @@ func (m *Manager) classifyResource(path string) (ResourceKind, string, bool) {
 type RestoreResult struct {
 	Success      bool           `json:"success"`
 	RestoredCard int            `json:"restoredCards"`
-	RestoredMod  int            `json:"restoredMods"`
 	FailedCount  int            `json:"failedCount"`
 	Logs         []OperationLog `json:"logs"`
 }
 
 // Restore 将隔离区中的文件移回游戏目录。
 //
-// cardPaths 为隔离区中文件的绝对路径集合（可能是资源文件，也可能是 zipmod）。
+// cardPaths 为隔离区中文件的绝对路径集合。
 func (m *Manager) Restore(cardPaths []string) RestoreResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -837,9 +641,11 @@ func (m *Manager) Restore(cardPaths []string) RestoreResult {
 			continue
 		}
 
-		// 区分 zipmod 与资源文件
-		if isUnder(abs, m.DelZipmodDir()) {
-			m.restoreZipmod(abs, &res)
+		// 历史遗留：DEL-zipmod 目录已不再管理，绝不改动其中的文件
+		if isUnder(abs, filepath.Join(m.DelCardsRoot, "DEL-zipmod")) {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error",
+				fmt.Sprintf("[跳过] %s 属于 DEL-zipmod，本工具已不再管理 zipmod，未做任何改动。", abs)})
 			continue
 		}
 
@@ -888,7 +694,7 @@ func (m *Manager) Restore(cardPaths []string) RestoreResult {
 
 	res.Success = res.FailedCount == 0
 	if res.Success {
-		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("恢复完成：资源 %d 个，MOD %d 个。", res.RestoredCard, res.RestoredMod)})
+		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("恢复完成：资源 %d 个。", res.RestoredCard)})
 	} else {
 		res.Logs = append(res.Logs, OperationLog{"warn", fmt.Sprintf("恢复结束，存在 %d 个失败项，请查看上方日志。", res.FailedCount)})
 	}
@@ -929,8 +735,6 @@ func (m *Manager) restoreSingleFile(abs string, kind ResourceKind, res *RestoreR
 		m.FileDeps[dst] = deps
 		delete(m.DelFileDeps, abs)
 	}
-	// 反向图由正向数据派生
-	m.rebuildDepIndex()
 }
 
 // ensureTargetParent 确保目标文件的父目录存在。
@@ -951,29 +755,6 @@ func (m *Manager) ensureTargetParent(targetFile string) error {
 		}
 	}
 	return os.MkdirAll(parent, 0755)
-}
-
-// restoreZipmod 将隔离区中的 zipmod 移回 mods 目录。
-func (m *Manager) restoreZipmod(src string, res *RestoreResult) {
-	modsDir := m.ModsDir()
-	if err := os.MkdirAll(modsDir, 0755); err != nil {
-		res.FailedCount++
-		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("创建 mods 目录失败: %v", err)})
-		return
-	}
-	dst := filepath.Join(modsDir, filepath.Base(src))
-	if _, err := os.Stat(dst); err == nil {
-		res.FailedCount++
-		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("mods 中已存在同名文件，跳过: %s", dst)})
-		return
-	}
-	if err := moveFile(src, dst); err != nil {
-		res.FailedCount++
-		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("恢复 zipmod 失败 %s: %v", src, err)})
-		return
-	}
-	res.RestoredMod++
-	res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[恢复 MOD] %s -> %s", src, dst)})
 }
 
 // classifyDelResource 判断隔离区中某个文件属于哪种资源类型及其相对目录。
@@ -1002,15 +783,15 @@ func (m *Manager) classifyDelResource(path string) (ResourceKind, string, bool) 
 // cleanEmptyDirs 自底向上删除 root 下的空目录，返回清理数量。
 // 只作用于隔离区，绝不触碰游戏目录。
 //
-// 注意：8 个标准隔离子目录（DEL-female_card 等）本身必须始终保留，
+// 注意：标准隔离子目录（DEL-female_card 等）本身必须始终保留，
 // 因此即使它们变空也不会被删除，只清理其内部的空目录。
 func (m *Manager) cleanEmptyDirs(root string) int {
-	// 保护标准子目录，避免被误删
+	// 保护标准子目录，避免被误删（含历史遗留的 DEL-zipmod）
 	protected := make(map[string]bool, len(ResourceKinds)+2)
 	for _, k := range ResourceKinds {
 		protected[filepath.Join(root, k.DelName)] = true
 	}
-	protected[filepath.Join(root, delZipmodDirName)] = true
+	protected[filepath.Join(root, "DEL-zipmod")] = true
 	// 隐藏状态目录内保存着 JSON 状态文件，绝不能被清理
 	protected[filepath.Join(root, invisibleDirName)] = true
 

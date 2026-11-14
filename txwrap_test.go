@@ -16,8 +16,6 @@ func TestIsolateCreatesHistory(t *testing.T) {
 	card := env.femaleCard("h1.png")
 	writeFile(t, card, "card")
 	m.Scanned = true
-	m.FileDeps[card] = []string{}
-	m.derive()
 
 	res := m.Isolate([]string{card})
 	if res.FailedCount != 0 {
@@ -44,8 +42,6 @@ func TestUndoIsolateRestoresFile(t *testing.T) {
 	card := env.femaleCard("u1.png")
 	writeFile(t, card, "card content")
 	m.Scanned = true
-	m.FileDeps[card] = []string{}
-	m.derive()
 
 	res := m.Isolate([]string{card})
 	if res.FailedCount != 0 {
@@ -92,8 +88,6 @@ func TestUndoRejectsModifiedTarget(t *testing.T) {
 	card := env.femaleCard("m1.png")
 	writeFile(t, card, "original")
 	m.Scanned = true
-	m.FileDeps[card] = []string{}
-	m.derive()
 
 	m.Isolate([]string{card})
 	list := m.GetHistory(0, 10)
@@ -121,8 +115,6 @@ func TestRestoreCreatesHistory(t *testing.T) {
 	card := env.femaleCard("r1.png")
 	writeFile(t, card, "x")
 	m.Scanned = true
-	m.FileDeps[card] = []string{}
-	m.derive()
 	m.Isolate([]string{card})
 
 	delCard := filepath.Join(m.DelDir(ResourceKinds[0]), "r1.png")
@@ -152,9 +144,6 @@ func TestFailedIsolateRollsBack(t *testing.T) {
 	writeFile(t, cardA, "a")
 	writeFile(t, cardB, "b")
 	m.Scanned = true
-	m.FileDeps[cardA] = []string{}
-	m.FileDeps[cardB] = []string{}
-	m.derive()
 
 	// 预先在目标位置放同名文件，制造冲突
 	writeFile(t, filepath.Join(m.DelDir(ResourceKinds[0]), "a.png"), "conflict")
@@ -182,8 +171,6 @@ func TestCrashRecoveryViaManager(t *testing.T) {
 	card := env.femaleCard("c1.png")
 	writeFile(t, card, "x")
 	m.Scanned = true
-	m.FileDeps[card] = []string{}
-	m.derive()
 
 	// 开启事务并移动，但不提交（模拟崩溃）
 	txn, err := m.beginTx("paste", "崩溃模拟")

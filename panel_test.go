@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"kksresourcemanager/internal/core"
-	"kksresourcemanager/internal/index"
 )
 
 // TestTileCount 验证九宫格的数量规则。
@@ -240,148 +239,6 @@ func TestPanelFocusSelected(t *testing.T) {
 	}
 }
 
-// TestPanelZipmodZeroRefs 零引用 zipmod 必须显示空态而非"无法预览"（红线 N3）。
-func TestPanelZipmodZeroRefs(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
-
-	modPath := filepath.Join(m.ModsDir(), "lonely.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["lonely.guid"] = modPath
-	m.guidOfPath[modPath] = "lonely.guid"
-
-	panel, err := m.BuildPanel("left", "zipmod", "", modPath)
-	if err != nil {
-		t.Fatalf("构建面板失败: %v", err)
-	}
-	secA, secB := panel.Sections[0], panel.Sections[1]
-
-	if !secA.Visible {
-		t.Error("零引用时区域 A 仍应可见（0 引用是关键判断信息）")
-	}
-	if secA.Empty == "" {
-		t.Error("零引用时应显示空态文案")
-	}
-	if !secB.Visible {
-		t.Error("零引用时区域 B 仍应可见")
-	}
-	if secB.Layout != "summary" {
-		t.Errorf("插件区域应为 summary 布局，实际 %s", secB.Layout)
-	}
-	joined := ""
-	for _, tile := range secB.Tiles {
-		joined += tile.Name
-	}
-	if !strings.Contains(joined, "被 0 个 dll 插件使用") || !strings.Contains(joined, "未被任何插件硬编码引用") {
-		t.Errorf("零插件引用时应给出文字说明，实际 %q", joined)
-	}
-	// 全文不应出现"无法预览"
-	for _, sec := range panel.Sections {
-		for _, tile := range sec.Tiles {
-			if tile.Name == "无法预览" {
-				t.Error("不应出现「无法预览」文案")
-			}
-		}
-	}
-}
-
-// TestPanelZipmodWithRefs zipmod 应列出引用它的卡片。
-func TestPanelZipmodWithRefs(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
-
-	modPath := filepath.Join(m.ModsDir(), "used.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["used.guid"] = modPath
-
-	card := env.femaleCard("card1.png")
-	writeFile(t, card, "x")
-	m.GlobalDepMap["used.guid"] = []string{card}
-
-	panel, err := m.BuildPanel("left", "zipmod", "", modPath)
-	if err != nil {
-		t.Fatalf("构建面板失败: %v", err)
-	}
-	secA := panel.Sections[0]
-	if secA.Total != 1 {
-		t.Errorf("区域 A 应有 1 张引用卡片，实际 %d", secA.Total)
-	}
-	if len(secA.Tiles) != 1 {
-		t.Fatalf("应渲染 1 个格子，实际 %d", len(secA.Tiles))
-	}
-	if filepath.Base(secA.Tiles[0].Abs) != "card1.png" {
-		t.Errorf("格子应指向引用卡片，实际 %s", secA.Tiles[0].Abs)
-	}
-}
-
-// TestPanelZipmodPluginSection 插件区域只给文字说明，不铺图标窗格。
-//
-// 新契约（用户明确要求）：DLL 插件显示「被 N 个 dll 插件使用」即可。
-func TestPanelZipmodPluginSection(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
-
-	modPath := filepath.Join(m.ModsDir(), "plug.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["plug.guid"] = modPath
-	m.PluginDepMap["plug.guid"] = []string{"BepInEx/plugins/Foo.dll"}
-
-	panel, err := m.BuildPanel("left", "zipmod", "", modPath)
-	if err != nil {
-		t.Fatalf("构建面板失败: %v", err)
-	}
-	secB := panel.Sections[1]
-	if secB.ID != "plugins" {
-		t.Errorf("区域 B 应为 plugins，实际 %s", secB.ID)
-	}
-	if secB.Layout != "summary" {
-		t.Errorf("插件区域应为 summary 布局，实际 %s", secB.Layout)
-	}
-	if secB.Total != 1 {
-		t.Errorf("插件引用数应为 1，实际 %d", secB.Total)
-	}
-	if len(secB.Tiles) == 0 {
-		t.Fatal("应至少有一行文字说明")
-	}
-	if !strings.Contains(secB.Tiles[0].Name, "被 1 个 dll 插件使用") {
-		t.Errorf("首行应为插件数说明，实际 %q", secB.Tiles[0].Name)
-	}
-	// 不应再出现 plugin 类型的图标格
-	for _, tile := range secB.Tiles {
-		if tile.Kind == "plugin" {
-			t.Errorf("不应再渲染插件图标格：%s", tile.Name)
-		}
-	}
-}
-
-// TestPanelZipmodInfoBar 信息栏应显示占用数明细。
-func TestPanelZipmodInfoBar(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
-
-	modPath := filepath.Join(m.ModsDir(), "info.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["info.guid"] = modPath
-	m.GlobalDepMap["info.guid"] = []string{"a.png", "b.png"}
-	m.PluginDepMap["info.guid"] = []string{"BepInEx/plugins/X.dll"}
-
-	panel, err := m.BuildPanel("left", "zipmod", "", modPath)
-	if err != nil {
-		t.Fatalf("构建面板失败: %v", err)
-	}
-	info := panel.Focus.Info
-	if info == "" {
-		t.Fatal("信息栏不应为空")
-	}
-	// 应包含 GUID 与占用数（卡片 2 / 插件 1）
-	if !contains(info, "info.guid") {
-		t.Errorf("信息栏应含 GUID，实际 %q", info)
-	}
-	if !contains(info, "3") {
-		t.Errorf("信息栏应含总占用数 3，实际 %q", info)
-	}
-}
-
 // TestPanelNaturalSort 面板内的文件应按自然序排列。
 func TestPanelNaturalSort(t *testing.T) {
 	env := newTestEnv(t)
@@ -447,85 +304,6 @@ func indexOf(s, sub string) int {
 
 var _ = os.Stat
 
-// TestModsTreeRefCount 验证 zipmod 列表的占用数（O(1) 内存查询）。
-func TestModsTreeRefCount(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
-
-	// 两个 zipmod
-	modA := filepath.Join(m.ModsDir(), "a.zipmod")
-	modB := filepath.Join(m.ModsDir(), "b.zipmod")
-	writeFile(t, modA, "mod")
-	writeFile(t, modB, "mod")
-
-	m.ZipmodDB["guid.a"] = modA
-	m.ZipmodDB["guid.b"] = modB
-	// 索引里有 GUID（真实扫描后的状态）
-	m.index = index.NewIndexData(m.KksRoot)
-	m.index.Zipmods[modA] = &index.ZipmodEntry{GUID: "guid.a"}
-	m.index.Zipmods[modB] = &index.ZipmodEntry{GUID: "guid.b"}
-	m.GlobalDepMap["guid.a"] = []string{"c1.png", "c2.png", "c3.png"}
-	m.PluginDepMap["guid.a"] = []string{"BepInEx/plugins/X.dll"}
-	m.GlobalDepMap["guid.b"] = nil
-
-	nodes := m.buildModsTree(m.ModsDir())
-	if len(nodes) != 2 {
-		t.Fatalf("应有 2 个 zipmod，实际 %d", len(nodes))
-	}
-	byName := make(map[string]TreeNode, 2)
-	for _, n := range nodes {
-		byName[n.Name] = n
-	}
-
-	a := byName["a.zipmod"]
-	if a.RefCards != 3 {
-		t.Errorf("a.zipmod 应有 3 个卡片引用，实际 %d", a.RefCards)
-	}
-	if a.RefPlugins != 1 {
-		t.Errorf("a.zipmod 应有 1 个插件引用，实际 %d", a.RefPlugins)
-	}
-	if a.RefCount != 4 {
-		t.Errorf("a.zipmod 总占用应为 4，实际 %d", a.RefCount)
-	}
-	if a.GUID != "guid.a" {
-		t.Errorf("a.zipmod 的 GUID 应为 guid.a，实际 %q", a.GUID)
-	}
-
-	b := byName["b.zipmod"]
-	if b.RefCount != 0 {
-		t.Errorf("b.zipmod 占用应为 0，实际 %d", b.RefCount)
-	}
-}
-
-// TestZipmodDetailOf 验证占用详情包含卡片与插件明细。
-func TestZipmodDetailOf(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
-
-	modPath := filepath.Join(m.ModsDir(), "detail.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["detail.guid"] = modPath
-	m.GlobalDepMap["detail.guid"] = []string{"a.png", "b.png"}
-	m.PluginDepMap["detail.guid"] = []string{"BepInEx/plugins/Foo.dll"}
-
-	d := m.ZipmodDetailOf("detail.guid")
-	if d.GUID != "detail.guid" {
-		t.Errorf("GUID 应为 detail.guid，实际 %q", d.GUID)
-	}
-	if d.RefCards != 2 {
-		t.Errorf("应有 2 个卡片引用，实际 %d", d.RefCards)
-	}
-	if d.RefPlugins != 1 {
-		t.Errorf("应有 1 个插件引用，实际 %d", d.RefPlugins)
-	}
-	if len(d.Cards) != 2 {
-		t.Errorf("cards 列表应有 2 项，实际 %d", len(d.Cards))
-	}
-	if len(d.Plugins) != 1 || d.Plugins[0].Name != "Foo.dll" {
-		t.Errorf("plugins 列表应含 Foo.dll，实际 %v", d.Plugins)
-	}
-}
-
 // TestPanelCardFocusSingle 卡片焦点必须出单张大图，而不是九宫格（FIX-02）。
 func TestPanelCardFocusSingle(t *testing.T) {
 	env := newTestEnv(t)
@@ -585,8 +363,12 @@ func TestPanelCardInfoNotDuplicate(t *testing.T) {
 	if strings.Contains(panel.Focus.Info, "87642255_p18.png") {
 		t.Errorf("信息栏不应包含文件名，实际 %q", panel.Focus.Info)
 	}
-	if !strings.Contains(panel.Focus.Info, "依赖") {
-		t.Errorf("信息栏应含依赖数，实际 %q", panel.Focus.Info)
+	// v2.4：不再展示 zipmod 依赖数，信息栏只保留大小
+	if !strings.Contains(panel.Focus.Info, "B") {
+		t.Errorf("信息栏应含大小，实际 %q", panel.Focus.Info)
+	}
+	if strings.Contains(panel.Focus.Info, "依赖") {
+		t.Errorf("信息栏不应再含依赖数，实际 %q", panel.Focus.Info)
 	}
 }
 
@@ -613,98 +395,6 @@ func TestPanelFolderFocusStillGrid(t *testing.T) {
 	}
 	if len(panel.Sections) != 2 {
 		t.Errorf("文件夹焦点应有 A/B 两区，实际 %d", len(panel.Sections))
-	}
-}
-
-// TestPanelZipmodFullList zipmod 引用必须全量显示，不出现「还有 N」（FIX-03）。
-func TestPanelZipmodFullList(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
-
-	modPath := filepath.Join(m.ModsDir(), "many.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["many.guid"] = modPath
-	m.guidOfPath[modPath] = "many.guid"
-
-	// 构造 33 个引用
-	refs := make([]string, 0, 33)
-	for i := 0; i < 33; i++ {
-		refs = append(refs, env.femaleCard(fmt.Sprintf("card_%02d.png", i)))
-	}
-	m.GlobalDepMap["many.guid"] = refs
-
-	panel, err := m.BuildPanel("left", "zipmod", "", modPath)
-	if err != nil {
-		t.Fatalf("构建面板失败: %v", err)
-	}
-
-	secA := panel.Sections[0]
-	if secA.Total != 33 {
-		t.Errorf("总数应为 33，实际 %d", secA.Total)
-	}
-	if len(secA.Tiles) != 33 {
-		t.Errorf("应渲染 33 个格子，实际 %d", len(secA.Tiles))
-	}
-	if secA.More != 0 {
-		t.Errorf("zipmod 不应出现「还有」格，实际 more=%d", secA.More)
-	}
-	if !secA.Lazy {
-		t.Error("zipmod 区域应标记 Lazy=true（前端按可视区加载）")
-	}
-	// 不应预请求缩略图
-	for _, tile := range secA.Tiles {
-		if tile.Thumb != "" {
-			t.Error("zipmod 全量列表不应在后端预生成缩略图")
-			break
-		}
-		if tile.ThumbKey == "" {
-			t.Error("每个格子仍应带 thumbKey，供前端懒加载")
-			break
-		}
-	}
-}
-
-// TestPanelZipmodOrderStable 全量列表顺序必须稳定（自然序，同名按路径）。
-func TestPanelZipmodOrderStable(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
-
-	modPath := filepath.Join(m.ModsDir(), "ord.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["ord.guid"] = modPath
-	m.guidOfPath[modPath] = "ord.guid"
-
-	m.GlobalDepMap["ord.guid"] = []string{
-		env.femaleCard("22.7.10/2.png"),
-		env.femaleCard("22.7.9/2.png"),
-		env.femaleCard("22.7.9/10.png"),
-		env.femaleCard("22.7.9/1.png"),
-	}
-
-	names := func() []string {
-		panel, err := m.BuildPanel("left", "zipmod", "", modPath)
-		if err != nil {
-			t.Fatalf("构建面板失败: %v", err)
-		}
-		out := make([]string, 0, len(panel.Sections[0].Tiles))
-		for _, tile := range panel.Sections[0].Tiles {
-			out = append(out, tile.Name)
-		}
-		return out
-	}
-
-	first := names()
-	second := names()
-	if strings.Join(first, "|") != strings.Join(second, "|") {
-		t.Errorf("两次构建顺序不一致：%v vs %v", first, second)
-	}
-
-	// 自然序：1 < 2 < 10（字符串序会把 10 排到 2 前面，那是错的）
-	// 两个 2.png 相邻，再由全路径做稳定并列决胜
-	want := []string{"1.png", "2.png", "2.png", "10.png"}
-	got := strings.Join(first, ",")
-	if got != strings.Join(want, ",") {
-		t.Errorf("自然序不符：\n实际 %s\n期望 %s", got, strings.Join(want, ","))
 	}
 }
 
@@ -754,22 +444,3 @@ func TestBuildTreeFiltersExtensions(t *testing.T) {
 	}
 }
 
-// TestBuildModsTreeFiltersExtensions zipmod 列表只收 .zipmod（FIX-06）。
-func TestBuildModsTreeFiltersExtensions(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
-
-	os.MkdirAll(m.ModsDir(), 0755)
-	writeFile(t, filepath.Join(m.ModsDir(), "a.zipmod"), "mod")
-	writeFile(t, filepath.Join(m.ModsDir(), "readme.txt"), "text")
-	writeFile(t, filepath.Join(m.ModsDir(), "backup.zipmod.bak"), "bak")
-	writeFile(t, filepath.Join(m.ModsDir(), "thumb.jpg"), "jpg")
-
-	nodes := m.buildModsTree(m.ModsDir())
-	if len(nodes) != 1 {
-		t.Fatalf("应只有 1 个 zipmod 节点，实际 %d", len(nodes))
-	}
-	if nodes[0].Name != "a.zipmod" {
-		t.Errorf("节点应为 a.zipmod，实际 %s", nodes[0].Name)
-	}
-}

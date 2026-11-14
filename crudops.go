@@ -22,19 +22,29 @@ func (m *Manager) trashStore() (*ops.TrashStore, error) {
 	return ops.NewTrashStore(m.DelCardsRoot)
 }
 
+// filterHistoricalZipmodTrash 过滤历史遗留的 zipmod 回收站条目。
+//
+// v2.4 起不再管理 zipmod：这些条目只允许展示，
+// 禁止还原 / 彻底删除，由用户手动处理。
+func filterHistoricalZipmodTrash(rels []string) (kept []string, blocked int) {
+	kept = make([]string, 0, len(rels))
+	for _, rel := range rels {
+		r := filepath.ToSlash(rel)
+		if r == "zipmod" || strings.HasPrefix(r, "zipmod/") {
+			blocked++
+			continue
+		}
+		kept = append(kept, rel)
+	}
+	return kept, blocked
+}
+
 // specOf 判断路径所属的资源种类与该种类的根目录。
 //
 // root 用于计算「原相对路径」—— 回收站必须保留这个结构，
 // 否则删两个不同子目录里的同名 2.png 会变成 2.png / 2__2.png，
 // 用户完全看不出原本在哪（v2.2 FIX-07）。
 func (m *Manager) specOf(abs string) (string, string, bool) {
-	// zipmod：mods 侧与 DEL-zipmod 侧都算 zipmod
-	if _, ok := ops.SpecOfMods(abs, m.ModsDir()); ok {
-		return "zipmod", m.ModsDir(), true
-	}
-	if strings.HasPrefix(abs, m.DelZipmodDir()+string(filepath.Separator)) {
-		return "zipmod", m.DelZipmodDir(), true
-	}
 	for _, kind := range ResourceKinds {
 		if r, err := filepath.Rel(m.SourceDir(kind), abs); err == nil && !strings.HasPrefix(r, "..") {
 			return kind.Mode, m.SourceDir(kind), true
@@ -108,7 +118,6 @@ func (m *Manager) CmdRename(pathAbs, newName string) ops.OpResult {
 	if err := m.commitTx(txn); err != nil {
 		res.Message = "已重命名，但提交事务失败：" + err.Error()
 	}
-	m.rebuildDepIndex()
 	m.invalidateCaches()
 	return res
 }
@@ -148,7 +157,6 @@ func (m *Manager) CommitDelete(paths []string) (int, []string, error) {
 	if err := m.commitTx(txn); err != nil {
 		return moved, errs, err
 	}
-	m.rebuildDepIndex()
 	m.invalidateCaches()
 	return moved, errs, nil
 }
@@ -176,6 +184,14 @@ func (m *Manager) CmdTrashRestore(trashRels []string) ops.RestoreResult {
 		return ops.RestoreResult{Conflicts: []ops.Conflict{{Reason: err.Error()}}}
 	}
 
+	kept, _ := filterHistoricalZipmodTrash(trashRels)
+	if len(kept) == 0 {
+		return ops.RestoreResult{Conflicts: []ops.Conflict{{
+			Reason: "所选条目属于历史遗留 zipmod，本工具已不再管理 zipmod，请手动处理。",
+		}}}
+	}
+	trashRels = kept
+
 	txn, err := m.beginTx("trash-restore", fmt.Sprintf("还原 %d 个条目", len(trashRels)))
 	if err != nil {
 		return ops.RestoreResult{Conflicts: []ops.Conflict{{Reason: err.Error()}}}
@@ -190,7 +206,6 @@ func (m *Manager) CmdTrashRestore(trashRels []string) ops.RestoreResult {
 		res.Conflicts = append(res.Conflicts, ops.Conflict{Reason: err.Error()})
 		return res
 	}
-	m.rebuildDepIndex()
 	m.invalidateCaches()
 	return res
 }
@@ -203,6 +218,14 @@ func (m *Manager) CmdTrashPurge(trashRels []string, confirmText string) ops.Purg
 	if err != nil {
 		return ops.PurgeResult{Errors: []string{err.Error()}}
 	}
+
+	kept, _ := filterHistoricalZipmodTrash(trashRels)
+	if len(kept) == 0 {
+		return ops.PurgeResult{Errors: []string{
+			"所选条目属于历史遗留 zipmod，本工具已不再管理 zipmod，请手动处理。",
+		}}
+	}
+	trashRels = kept
 
 	// 二次确认：必须输入某个待删条目的名称
 	if strings.TrimSpace(confirmText) == "" {

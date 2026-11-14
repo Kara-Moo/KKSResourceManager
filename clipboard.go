@@ -9,19 +9,15 @@ package main
 //
 // 两条硬性规则：
 //
-//  1. zipmod 的复制/剪切/粘贴等价于「启用 / 隔离」，
-//     且必须严格保证不会有 zipmod 缺失：
-//     把 zipmod 从游戏 mods 目录移走之前，要先确认没有任何仍存在的
-//     资源文件引用它，否则拒绝该操作。
+//  1. 本工具不再对 zipmod 执行任何文件操作：粘贴时遇到 .zipmod 直接拒绝。
 //
-//  2. PNG 的复制/粘贴不受「保留路径相同」约束，可任意操作；
+//  2. PNG/JPG 的复制/粘贴不受「保留路径相同」约束，可任意操作；
 //     但若目标位置已存在同名文件，则取消该次复制并报「无法复制」。
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 )
@@ -47,7 +43,7 @@ type ClipboardState struct {
 	Paths []string `json:"paths"`
 	// SourceSide 来源侧（kks / del）
 	SourceSide string `json:"sourceSide"`
-	// Mode 来源的资源类型（female_card 等），用于判断 zipmod
+	// Mode 来源的资源类型（female_card 等）
 	Mode string `json:"mode"`
 }
 
@@ -139,17 +135,14 @@ func (m *Manager) Paste(targetDir, targetSide, targetMode string) ClipboardResul
 		return res
 	}
 
-	// --- 预检：目标同名冲突与 zipmod 依赖 ---
+	// --- 预检：目标同名冲突 ---
 	// 预检全部通过才执行，避免执行到一半才发现冲突。
 	type planItem struct {
-		src      string
-		dst      string
-		isZipmod bool
-		guid     string
+		src string
+		dst string
 	}
 	var plans []planItem
 	var conflict error
-	var modBlocked *planItem
 
 	for _, src := range state.Paths {
 		abs, err := filepath.Abs(src)
@@ -158,18 +151,19 @@ func (m *Manager) Paste(targetDir, targetSide, targetMode string) ClipboardResul
 			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("路径无效: %s", src)})
 			continue
 		}
+
+		// 本工具不再对 zipmod 执行任何文件操作：直接拒绝，不移动、不复制。
+		if strings.EqualFold(filepath.Ext(abs), ".zipmod") {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error",
+				fmt.Sprintf("[拒绝] %s 是 zipmod，本工具不再对 zipmod 执行任何文件操作。", filepath.Base(abs))})
+			continue
+		}
+
 		if _, err := os.Stat(abs); err != nil {
 			res.FailedCount++
 			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("源不存在: %s", abs)})
 			continue
-		}
-
-		// 是否是 zipmod？以扩展名判定（而非 GUID 是否解析成功），
-		// 否则解析失败的 zipmod 会绕过依赖检查被移走，造成依赖缺失。
-		isZipmod := strings.EqualFold(filepath.Ext(abs), zipmodExt)
-		guid := ""
-		if isZipmod {
-			guid = m.zipmodGUID(abs)
 		}
 
 		dst := filepath.Join(targetDir, filepath.Base(abs))
@@ -179,32 +173,7 @@ func (m *Manager) Paste(targetDir, targetSide, targetMode string) ClipboardResul
 			break
 		}
 
-		// zipmod 安全校验：从 mods 侧移出时不能造成依赖缺失
-		if isZipmod && state.SourceSide == SideKKS && targetSide == SideDEL {
-			// GUID 解析不出来时无法判断依赖归属，保守起见拒绝移出
-			if guid == "" {
-				item := planItem{src: abs, dst: dst, isZipmod: true, guid: guid}
-				modBlocked = &item
-				res.Logs = append(res.Logs, OperationLog{
-					"warn",
-					fmt.Sprintf("无法隔离：%s 无法识别 GUID，无法确认依赖关系，已保留原文件。", filepath.Base(abs)),
-				})
-				break
-			}
-			// 三道防线统一判定（卡片依赖 / 插件依赖 / mod 间依赖）
-			// §8.6：所有移动 zipmod 的路径必须走同一个判定入口
-			if ok, reason := m.checkZipmodMovable(guid, nil); !ok {
-				item := planItem{src: abs, dst: dst, isZipmod: true, guid: guid}
-				modBlocked = &item
-				res.Logs = append(res.Logs, OperationLog{
-					"warn",
-					fmt.Sprintf("无法隔离：%s: %s", filepath.Base(abs), reason),
-				})
-				break
-			}
-		}
-
-		plans = append(plans, planItem{src: abs, dst: dst, isZipmod: isZipmod, guid: guid})
+		plans = append(plans, planItem{src: abs, dst: dst})
 	}
 
 	// 冲突时取消整个复制操作
@@ -214,31 +183,16 @@ func (m *Manager) Paste(targetDir, targetSide, targetMode string) ClipboardResul
 		res.Success = false
 		return res
 	}
-	// zipmod 依赖阻塞时同样取消
-	if modBlocked != nil {
-		res.FailedCount++
-		res.Success = false
-		return res
-	}
 
 	// --- 执行 ---
 	for _, p := range plans {
-		// zipmod 的语义是「启用 / 隔离」而非普通复制：
-		//   从 mods 侧到隔离区 = 隔离（源必须移走，否则等于没隔离）
-		//   从隔离区到 mods 侧 = 启用（源必须移走，否则会重复）
-		// 因此 zipmod 无论复制还是剪切，都执行移动。
-		effectiveOp := state.Op
-		if p.isZipmod {
-			effectiveOp = ClipboardCut
-		}
-
-		if effectiveOp == ClipboardCut {
+		if state.Op == ClipboardCut {
 			if err := moveFile(p.src, p.dst); err != nil {
 				res.FailedCount++
 				res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("移动失败 %s -> %s: %v", p.src, p.dst, err)})
 				continue
 			}
-			m.afterResourceMoved(p.src, p.dst, p.isZipmod, p.guid)
+			m.afterResourceMoved(p.src, p.dst)
 			res.Affected++
 			res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[移动] %s -> %s", p.src, p.dst)})
 		} else {
@@ -270,61 +224,16 @@ func (m *Manager) Paste(targetDir, targetSide, targetMode string) ClipboardResul
 // 依赖与状态维护
 // ---------------------------------------------------------------------------
 
-// zipmodGUID 读取 zipmod 的 GUID。
-func (m *Manager) zipmodGUID(path string) string {
-	manifest, err := ReadModManifest(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(manifest.GUID)
-}
-
-// zipmodStillReferenced 判断 zipmod 是否仍被资源文件引用。
-//
-// excludePath 为正在被移动的 zipmod 自身（移动后它就不再位于原位置）。
-func (m *Manager) zipmodStillReferenced(guid, excludePath string) []string {
-	var blockers []string
-	for _, ref := range m.GlobalDepMap[guid] {
-		if ref == excludePath {
-			continue
-		}
-		// 只统计真实存在的文件
-		if _, err := os.Stat(ref); err != nil {
-			continue
-		}
-		blockers = append(blockers, ref)
-	}
-	sort.Strings(blockers)
-	return blockers
-}
-
-// afterResourceMoved 在文件移动/复制后同步维护全局依赖图。
-func (m *Manager) afterResourceMoved(src, dst string, isZipmod bool, guid string) {
-	if isZipmod {
-		// zipmod 移动：更新或移除 GUID 索引
-		if guid != "" {
-			if _, err := os.Stat(dst); err == nil {
-				m.ZipmodDB[guid] = dst
-			} else {
-				delete(m.ZipmodDB, guid)
-			}
-		}
-		// 源已不存在，从依赖图中移除其引用
-		m.removeDep(src)
-		return
-	}
-
+// afterResourceMoved 在文件移动/复制后同步维护正向索引。
+func (m *Manager) afterResourceMoved(src, dst string) {
 	// 资源文件：解析新位置的依赖并更新**正向**索引
 	guids, err := ParseCardGUIDs(dst)
 	if err != nil || len(guids) == 0 {
 		m.removeDep(src)
-		m.rebuildDepIndex()
 		return
 	}
 	m.FileDeps[dst] = guids
 	m.removeDep(src)
-	// 反向图由正向数据派生，不做增量 append（避免重复累积）
-	m.rebuildDepIndex()
 }
 
 // ---------------------------------------------------------------------------

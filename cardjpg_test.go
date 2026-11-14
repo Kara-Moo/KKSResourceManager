@@ -205,48 +205,6 @@ func TestRealJPGPreview(t *testing.T) {
 	t.Logf("预览 %dx%d；依赖 %d 个 zipmod（纯图片为 0 属正常）", w, h, len(guids))
 }
 
-// TestZipmodRefsIncludeJPG zipmod 的引用列表必须同时包含 PNG 与 JPG 卡片。
-func TestZipmodRefsIncludeJPG(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
-
-	modPath := filepath.Join(m.ModsDir(), "jpg.zipmod")
-	writeFile(t, modPath, "mod")
-	m.ZipmodDB["jpg.guid"] = modPath
-	m.guidOfPath[modPath] = "jpg.guid"
-	m.GlobalDepMap["jpg.guid"] = []string{
-		env.femaleCard("a.png"),
-		env.femaleCard("b.JPG"),
-	}
-	m.PluginDepMap["jpg.guid"] = []string{"BepInEx/plugins/X.dll"}
-
-	panel, err := m.BuildPanel("left", "zipmod", "", modPath)
-	if err != nil {
-		t.Fatalf("构建面板失败: %v", err)
-	}
-	secA, secB := panel.Sections[0], panel.Sections[1]
-
-	if len(secA.Tiles) != 2 {
-		t.Fatalf("引用卡片应全量返回 2 个（含 JPG），实际 %d", len(secA.Tiles))
-	}
-	foundJPG := false
-	for _, tile := range secA.Tiles {
-		if strings.EqualFold(filepath.Ext(tile.Name), ".jpg") {
-			foundJPG = true
-		}
-	}
-	if !foundJPG {
-		t.Error("区域 A 应显示 JPG 引用卡片")
-	}
-
-	if secB.Layout != "summary" {
-		t.Errorf("插件区域应为 summary，实际 %s", secB.Layout)
-	}
-	if len(secB.Tiles) == 0 || !strings.Contains(secB.Tiles[0].Name, "被 1 个 dll 插件使用") {
-		t.Errorf("插件区域应给出文字说明，实际 %v", secB.Tiles)
-	}
-}
-
 // TestExplorerDirResolution 资源管理器打开的目标必须是受管范围内的规范绝对路径。
 func TestExplorerDirResolution(t *testing.T) {
 	env := newTestEnv(t)

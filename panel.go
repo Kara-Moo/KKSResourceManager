@@ -14,7 +14,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -47,17 +46,15 @@ type Tile struct {
 	Pending bool `json:"pending"`
 	// Selected 焦点所在格
 	Selected bool `json:"selected"`
-	// RefCount 被多少个文件占用（仅 zipmod 卡片格使用）
-	RefCount int `json:"refCount"`
 }
 
 // Section 右栏的一个区域。
 type Section struct {
-	// ID folders | cards | plugins
+	// ID folders | cards
 	ID string `json:"id"`
 	// Title 区域标题
 	Title string `json:"title"`
-	// Layout grid | list
+	// Layout grid | single
 	Layout string `json:"layout"`
 	// Total 该区域的条目总数
 	Total int `json:"total"`
@@ -71,9 +68,9 @@ type Section struct {
 	Visible bool `json:"visible"`
 	// Empty 非空且 Visible=true 时显示的空态文案
 	Empty string `json:"empty"`
-	// Lazy true 表示前端按可视区懒加载缩略图（zipmod 全量列表用）。
+	// Lazy true 表示前端按可视区懒加载缩略图。
 	//
-	// 为什么需要：500 张引用若都预请求，等于 500 次 os.Stat + 500 个队列任务，
+	// 为什么需要：全量列表若都预请求，等于 N 次 os.Stat + N 个队列任务，
 	// 切换焦点会瞬间打满队列，把真正需要的图挤到后面。
 	Lazy bool `json:"lazy"`
 }
@@ -111,7 +108,7 @@ func tileCount(n int) (tiles int, more int) {
 // BuildPanel 组装右栏两个区域。
 //
 // side     "left" | "right"
-// mode     当前管理种类（female_card / zipmod / invisible ...）
+// mode     当前管理种类（female_card / invisible ...）
 // rel      当前列表目录（相对类型根，POSIX）
 // focusAbs 焦点条目的绝对路径（可空）
 //
@@ -150,16 +147,11 @@ func (m *Manager) BuildPanel(side, mode, rel, focusAbs string) (Panel, error) {
 	panel.Focus.Name = focusName
 	panel.Focus.Abs = focusAbsNorm
 
-	// --- zipmod 分支 ---
-	if mode == ModeZipmod {
-		return m.buildZipmodPanel(&panel, focusAbsNorm, focusKind), nil
-	}
-
 	// --- 卡片分支：单张大图（v2.2 FIX-02）---
 	//
 	// 必须在这里分流：九宫格是「文件夹视角」的语义，
 	// 对单张卡是错误的 —— 用户点一张卡，想看的就是这一张。
-	if focusKind == "file" && mode != ModeZipmod && mode != "invisible" && focusAbsNorm != "" {
+	if focusKind == "file" && mode != "invisible" && focusAbsNorm != "" {
 		return m.buildCardPanel(&panel, focusAbsNorm), nil
 	}
 
@@ -320,7 +312,7 @@ func (m *Manager) buildCardPanel(panel *Panel, cardAbs string) Panel {
 	return *panel
 }
 
-// cardInfoLine 卡片信息栏文案：大小 + 依赖数。
+// cardInfoLine 卡片信息栏文案：大小。
 //
 // 不再回填文件名 —— 标题已经是文件名，重复两行是 FIX-08。
 func (m *Manager) cardInfoLine(abs string) string {
@@ -329,26 +321,11 @@ func (m *Manager) cardInfoLine(abs string) string {
 		size = info.Size()
 	}
 
-	// 依赖数直接查内存索引，不做磁盘访问
-	deps := 0
-	if m.index != nil {
-		if c, ok := m.index.Cards[abs]; ok {
-			deps = len(c.GUIDs)
-		}
-	}
-	if deps == 0 {
-		if g, ok := m.FileDeps[abs]; ok {
-			deps = len(g)
-		}
-	}
-
 	sizeText := core.ParseSize(size)
 	if size == 0 {
 		sizeText = "0 B"
 	}
-	// 统一显示「依赖 N 个 zipmod」，N=0 也照实写。
-	// JPG 卡片若不含 KKS 附加数据，N 就是 0 —— 这是真实结果，不伪装成未知。
-	return sizeText + " · 依赖 " + strconv.Itoa(deps) + " 个 zipmod"
+	return sizeText
 }
 
 // requestLargeThumb 请求单卡大图（720×960 档）。
@@ -363,121 +340,6 @@ func (m *Manager) requestLargeThumb(abs string) (key string, dataURI string, pen
 	}
 	uri, pend := m.thumbs.RequestSized(abs, fp, preview.SizeLarge, true)
 	return key, uri, pend
-}
-
-// buildZipmodPanel 构建 zipmod 焦点的面板（规格 §4）。
-//
-// 区域 A = 使用该 zipmod 的卡片（九宫格）
-// 区域 B = 引用该 GUID 的插件（列表）
-func (m *Manager) buildZipmodPanel(panel *Panel, focusAbs, focusKind string) Panel {
-	guid := m.guidOfPath[focusAbs]
-	if guid == "" {
-		// 兜底：从 ZipmodDB 反查。
-		// guidOfPath 由 applyIndex 建立，但若索引尚未 apply
-		// （例如刚扫描完还没落定），不能因此丢失整个面板。
-		for g, p := range m.ZipmodDB {
-			if samePath(p, focusAbs) {
-				guid = g
-				break
-			}
-		}
-	}
-
-	// --- 区域 A：引用它的卡片 ---
-	secA := Section{ID: "cards", Title: "使用此 zipmod 的卡片", Layout: "grid"}
-	var refs []string
-	if guid != "" {
-		refs = append(refs, m.GlobalDepMap[guid]...)
-	}
-	// 排序必须稳定且符合直觉：先按文件名自然序（22.7.9 在 22.7.10 之前），
-	// 同名再按全路径。否则同一次刷新顺序会跳，用户会以为内容变了。
-	sort.Slice(refs, func(i, j int) bool {
-		bi, bj := filepath.Base(refs[i]), filepath.Base(refs[j])
-		if bi != bj {
-			return core.NaturalLess(bi, bj)
-		}
-		return refs[i] < refs[j]
-	})
-
-	secA.Total = len(refs)
-	secA.Visible = true
-	if len(refs) == 0 {
-		// 零引用也是关键判断信息，必须显示
-		secA.Empty = "未被任何卡片引用（可作为「多余 zipmod」隔离）"
-	} else {
-		// **全量返回，永不截断**（v2.2 FIX-03）。
-		//
-		// 规则差异的由来：文件夹九宫格是「概览」，194 张全铺开会卡死，所以要 8+more；
-		// zipmod 是「审计」—— 用户要确认这个 mod 到底被谁用了，省略就失去意义。
-		//
-		// 这里**不调用 thumbRequest**：500 张引用 = 500 次 os.Stat + 500 个队列任务，
-		// 切换焦点会瞬间打满队列，把真正需要的图挤到后面。
-		// 只给 thumbKey，前端按可视区懒加载（Section.Lazy=true）。
-		secA.Tiles = make([]Tile, 0, len(refs))
-		for _, p := range refs {
-			secA.Tiles = append(secA.Tiles, Tile{
-				Kind:     "card",
-				Name:     filepath.Base(p),
-				Rel:      m.relOf(p),
-				Abs:      p,
-				Badge:    "",
-				ThumbKey: preview.ThumbKey(p, m.fingerprintOf(p)),
-				Pending:  true,
-			})
-		}
-		secA.More = 0
-		secA.Lazy = true
-	}
-
-	// --- 区域 B：插件引用（只给文字说明，不做窗格/图标）---
-	//
-	// 用户明确要求：DLL 插件只需「被 N 个 dll 插件使用」这一句，
-	// 不需要逐个列出图标。真正的审计价值在区域 A 的引用卡片全量列表。
-	secB := Section{ID: "plugins", Title: "插件引用", Layout: "summary"}
-	var plugins []string
-	if guid != "" {
-		plugins = append(plugins, m.PluginDepMap[guid]...)
-	}
-
-	secB.Total = len(plugins)
-	secB.Visible = true
-	secB.Tiles = []Tile{{
-		Kind: "text",
-		Name: "被 " + strconv.Itoa(len(plugins)) + " 个 dll 插件使用",
-	}}
-	if len(plugins) == 0 {
-		secB.Tiles = append(secB.Tiles, Tile{
-			Kind: "text",
-			Name: "未被任何插件硬编码引用，可作为普通 zipmod 管理",
-		})
-	} else {
-		// 具体 DLL 名称仍可从「占用详情」弹窗查看，这里不铺图标
-		names := make([]string, 0, len(plugins))
-		for _, rel := range plugins {
-			names = append(names, filepath.Base(rel))
-		}
-		sort.Strings(names)
-		if len(names) > 3 {
-			names = names[:3]
-		}
-		secB.Tiles = append(secB.Tiles, Tile{
-			Kind: "text",
-			Name: "例如：" + strings.Join(names, "、"),
-		})
-	}
-
-	panel.Sections = []Section{secA, secB}
-
-	// --- 信息栏 ---
-	if guid == "" {
-		panel.Focus.Info = "无法识别 GUID，永久禁止自动隔离"
-	} else {
-		cards := len(m.GlobalDepMap[guid])
-		plugins := len(m.PluginDepMap[guid])
-		panel.Focus.Info = "GUID: " + guid + " · 被 " + strconv.Itoa(cards+plugins) +
-			" 个文件占用（卡片 " + strconv.Itoa(cards) + " / 插件 " + strconv.Itoa(plugins) + "）"
-	}
-	return *panel
 }
 
 // invisibleFocusInfo 生成隐藏项的信息栏文案。
@@ -506,23 +368,15 @@ func (m *Manager) panelFocusInfo(mode, dir, focusAbs, focusKind string) string {
 
 // resolveRelDir 把「相对类型根的路径」解析为绝对目录。
 func (m *Manager) resolveRelDir(mode, side, rel string) string {
+	kind, ok := KindByMode(mode)
+	if !ok {
+		return ""
+	}
 	var root string
-	if mode == ModeZipmod {
-		if side == "left" {
-			root = m.ModsDir()
-		} else {
-			root = m.DelZipmodDir()
-		}
+	if side == "left" {
+		root = m.SourceDir(kind)
 	} else {
-		kind, ok := KindByMode(mode)
-		if !ok {
-			return ""
-		}
-		if side == "left" {
-			root = m.SourceDir(kind)
-		} else {
-			root = m.DelDir(kind)
-		}
+		root = m.DelDir(kind)
 	}
 	if rel == "" {
 		return root

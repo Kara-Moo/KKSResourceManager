@@ -270,8 +270,8 @@ func (a *App) startScan(manager *Manager) {
 			a.emitScanProgress(phase, done, total)
 		})
 
-		msg := fmt.Sprintf("扫描完成：zipmod %d 个，资源文件 %d 个，依赖 GUID %d 个，耗时 %d ms",
-			result.ZipmodCount, result.ResourceCount, result.DepGUIDCount, result.ScanDurationMS)
+		msg := fmt.Sprintf("扫描完成：资源文件 %d 个，耗时 %d ms",
+			result.ResourceCount, result.ScanDurationMS)
 		if result.FailedFiles > 0 {
 			msg += fmt.Sprintf("，%d 个文件解析失败", result.FailedFiles)
 		}
@@ -319,11 +319,8 @@ func (a *App) emitScanDone(result ScanResult) {
 		return
 	}
 	wruntime.EventsEmit(a.ctx, "scan:complete", map[string]interface{}{
-		"zipmodCount":   result.ZipmodCount,
 		"resourceCount": result.ResourceCount,
-		"depGuidCount":  result.DepGUIDCount,
 		"failedFiles":   result.FailedFiles,
-		"missingMods":   result.MissingMods,
 		"durationMs":    result.ScanDurationMS,
 	})
 }
@@ -468,20 +465,12 @@ func findSampleCard(dir string) string {
 type TreeNode struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	Type string `json:"type"` // card / folder / mod / hidden
+	Type string `json:"type"` // card / folder / hidden
 	Path string `json:"path"`
 	// Rel 相对其所属根的 POSIX 路径。索引回查必须用它，不能用 ID（绝对路径）。
-	Rel string `json:"rel,omitempty"`
-	// GUID zipmod 的 GUID（仅 mod 类型有值）
-	GUID string `json:"guid,omitempty"`
-	// RefCount 被多少个文件占用（卡片 + 插件）。
-	// 仅 mod 类型有值；由索引内存表直接得出，不做任何磁盘访问（红线 N2）。
-	RefCount int `json:"refCount"`
-	// RefCards / RefPlugins 占用明细，用于 tooltip 与详情弹窗
-	RefCards   int      `json:"refCards"`
-	RefPlugins int      `json:"refPlugins"`
-	Mods       []string `json:"mods"`
-	// ModNames 依赖的 zipmod 文件名列表
+	Rel  string   `json:"rel,omitempty"`
+	Mods []string `json:"mods"`
+	// ModNames 依赖的 mod 文件名列表
 	ModNames []string `json:"modNames"`
 	Size     int64    `json:"size"`
 	// FolderStats 文件夹统计信息（仅 folder 类型有值）
@@ -569,46 +558,6 @@ func (a *App) GetRightTreeData(mode string) string {
 	}, "")
 }
 
-// GetModsTreeData 返回隔离区中的 zipmod 列表（扁平结构）。
-func (a *App) GetModsTreeData() string {
-	a.mu.RLock()
-	manager := a.manager
-	a.mu.RUnlock()
-
-	if manager == nil {
-		return fail("请先选择 KKS 根目录。")
-	}
-
-	root := manager.DelZipmodDir()
-	nodes := manager.buildModsTree(root)
-	return ok(TreeData{
-		Mode:     ModeZipmod,
-		Root:     root,
-		RootName: delZipmodDirName,
-		Nodes:    nodes,
-	}, "")
-}
-
-// GetInstalledModsData 返回游戏 mods 目录中已安装的 zipmod 列表（只读）。
-func (a *App) GetInstalledModsData() string {
-	a.mu.RLock()
-	manager := a.manager
-	a.mu.RUnlock()
-
-	if manager == nil {
-		return fail("请先选择 KKS 根目录。")
-	}
-
-	root := manager.ModsDir()
-	nodes := manager.buildModsTree(root)
-	return ok(TreeData{
-		Mode:     ModeZipmod,
-		Root:     root,
-		RootName: "mods",
-		Nodes:    nodes,
-	}, "")
-}
-
 // buildTree 递归扫描目录，返回扁平的节点列表（前端按 path 字段做目录匹配）。
 //
 // 扫描过程在后台协程中进行，可能同时修改 Manager 的依赖索引，
@@ -673,23 +622,14 @@ func (m *Manager) buildTreeLocked(root string, isDel bool, kind ResourceKind) []
 		}
 
 		guids := m.depsFor(path, isDel)
-		names := make([]string, 0, len(guids))
-		for _, guid := range guids {
-			if modPath, ok := m.ZipmodDB[guid]; ok {
-				names = append(names, filepath.Base(modPath))
-				continue
-			}
-			names = append(names, fmt.Sprintf("未知(%s)", guid))
-		}
 		nodes = append(nodes, TreeNode{
-			ID:       path,
-			Rel:      filepath.ToSlash(rel),
-			Name:     info.Name(),
-			Type:     "card",
-			Path:     filepath.ToSlash(parent),
-			Mods:     guids,
-			ModNames: names,
-			Size:     info.Size(),
+			ID:   path,
+			Rel:  filepath.ToSlash(rel),
+			Name: info.Name(),
+			Type: "card",
+			Path: filepath.ToSlash(parent),
+			Mods: guids,
+			Size: info.Size(),
 		})
 		return nil
 	})
@@ -776,64 +716,6 @@ func dirSize(dir string) (int, int64) {
 	return count, size
 }
 
-// buildModsTree 构建 zipmod 列表（扁平，不含子目录）。
-func (m *Manager) buildModsTree(root string) []TreeNode {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	nodes := make([]TreeNode, 0, 32)
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nodes
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		// 只收录 zipmod（同 FIX-06：mods 目录下常有 readme / .txt / 备份文件）
-		if !strings.EqualFold(filepath.Ext(e.Name()), ".zipmod") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		full := filepath.Join(root, e.Name())
-		// GUID 优先取索引（O(1)，索引里已有解析结果）；
-		// 索引没有（如刚隔离进来的新文件）才实时解析一次。
-		guid := ""
-		if m.index != nil {
-			if entry, ok := m.index.Zipmods[full]; ok {
-				guid = entry.GUID
-			}
-		}
-		if guid == "" {
-			if manifest, err := ReadModManifest(full); err == nil {
-				guid = manifest.GUID
-			}
-		}
-		node := TreeNode{
-			ID:   full,
-			Name: e.Name(),
-			Type: "mod",
-			Path: "",
-			Size: info.Size(),
-		}
-		if guid != "" {
-			node.GUID = guid
-			node.Mods = []string{guid}
-			node.ModNames = []string{e.Name()}
-			// 占用数：O(1) 内存查询（红线 N2）
-			// 绝不为了显示这个数字去 os.Stat 每个引用文件。
-			node.RefCards = len(m.GlobalDepMap[guid])
-			node.RefPlugins = len(m.PluginDepMap[guid])
-			node.RefCount = node.RefCards + node.RefPlugins
-		}
-		nodes = append(nodes, node)
-	}
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
-	return nodes
-}
-
 // depsFor 返回文件依赖的 GUID 列表。
 func (m *Manager) depsFor(path string, isDel bool) []string {
 	if isDel {
@@ -878,7 +760,7 @@ func (a *App) ExecuteIsolate(cardPaths []string, mode string) string {
 	for _, entry := range result.Logs {
 		a.emitLog(entry.Level, "isolate", entry.Message)
 	}
-	return ok(result, fmt.Sprintf("隔离完成：%d 个资源，%d 个 MOD", result.MovedCards, result.MovedMods))
+	return ok(result, fmt.Sprintf("隔离完成：%d 个资源。", result.MovedCards))
 }
 
 // ExecuteRestore 执行恢复操作，返回包含操作日志的 JSON。
@@ -898,7 +780,7 @@ func (a *App) ExecuteRestore(cardPaths []string, mode string) string {
 	for _, entry := range result.Logs {
 		a.emitLog(entry.Level, "isolate", entry.Message)
 	}
-	return ok(result, fmt.Sprintf("恢复完成：%d 个资源，%d 个 MOD", result.RestoredCard, result.RestoredMod))
+	return ok(result, fmt.Sprintf("恢复完成：%d 个资源。", result.RestoredCard))
 }
 
 // ---------------------------------------------------------------------------
@@ -1186,43 +1068,6 @@ func (a *App) GetThumbStats() string {
 	}, "")
 }
 
-// ZipmodDetail zipmod 的占用详情。
-type ZipmodDetail struct {
-	GUID       string         `json:"guid"`
-	Path       string         `json:"path"`
-	Base       string         `json:"base"`
-	Size       int64          `json:"size"`
-	Cards      []string       `json:"cards"`
-	Plugins    []PluginDetail `json:"plugins"`
-	RefCards   int            `json:"refCards"`
-	RefPlugins int            `json:"refPlugins"`
-	ParseErr   string         `json:"parseErr"`
-}
-
-// PluginDetail 一个 DLL 的命中详情。
-type PluginDetail struct {
-	Name    string   `json:"name"`
-	Rel     string   `json:"rel"`
-	Abs     string   `json:"abs"`
-	HitMode string   `json:"hitMode"`
-	GUIDs   []string `json:"guids"`
-}
-
-// GetZipmodDetail 返回 zipmod 的完整占用详情。
-//
-// 这是排查「为什么这个 mod 隔离不了」的关键信息。
-func (a *App) GetZipmodDetail(guid string) string {
-	a.mu.RLock()
-	manager := a.manager
-	a.mu.RUnlock()
-
-	if manager == nil {
-		return fail("请先选择 KKS 根目录。")
-	}
-	detail := manager.ZipmodDetailOf(guid)
-	return ok(detail, "")
-}
-
 // ---------------------------------------------------------------------------
 // 7. 操作历史与撤销（v2.1 §8）
 // ---------------------------------------------------------------------------
@@ -1429,94 +1274,6 @@ func formatBytes(n int64) string {
 }
 
 // ---------------------------------------------------------------------------
-// 9. zipmod 管理（v2.1 §7）
-// ---------------------------------------------------------------------------
-
-// PlanFixMissing 生成「修复缺失 zipmod」的计划（零副作用）。
-func (a *App) PlanFixMissing() string {
-	a.mu.RLock()
-	manager := a.manager
-	a.mu.RUnlock()
-
-	if manager == nil {
-		return fail("请先选择 KKS 根目录。")
-	}
-	plan := manager.PlanFixMissing()
-	if len(plan.Recoverable) == 0 && len(plan.Unrecoverable) == 0 {
-		return ok(plan, "没有缺失的 zipmod")
-	}
-	return ok(plan, fmt.Sprintf("可修复 %d 个，无法修复 %d 个", len(plan.Recoverable), len(plan.Unrecoverable)))
-}
-
-// CommitFixMissing 执行修复：把选中的 zipmod 放回 mods。
-func (a *App) CommitFixMissing(guids []string) string {
-	a.mu.RLock()
-	manager := a.manager
-	a.mu.RUnlock()
-
-	if manager == nil {
-		return fail("请先选择 KKS 根目录。")
-	}
-	restored, skipped, failed, err := manager.CommitFixMissing(guids)
-	for _, f := range failed {
-		a.emitLog("warn", "fix-missing", f)
-	}
-	if err != nil {
-		return fail(err.Error())
-	}
-	a.emitLog("success", "fix-missing",
-		fmt.Sprintf("[fix-missing] 恢复 %d 个 zipmod，跳过 %d 个", restored, skipped))
-	return ok(map[string]interface{}{
-		"restored": restored,
-		"skipped":  skipped,
-		"failed":   failed,
-	}, fmt.Sprintf("已恢复 %d 个 zipmod。", restored))
-}
-
-// PlanIsolateExtra 生成「隔离多余 zipmod」的计划（零副作用）。
-func (a *App) PlanIsolateExtra() string {
-	a.mu.RLock()
-	manager := a.manager
-	a.mu.RUnlock()
-
-	if manager == nil {
-		return fail("请先选择 KKS 根目录。")
-	}
-	plan := manager.PlanIsolateExtra()
-	if len(plan.Candidates) == 0 {
-		return ok(plan, "没有多余的 zipmod")
-	}
-	return ok(plan, fmt.Sprintf("将隔离 %d 个 zipmod，释放 %s", len(plan.Candidates), formatBytes(plan.TotalBytes)))
-}
-
-// CommitIsolateExtra 执行隔离多余 zipmod。
-func (a *App) CommitIsolateExtra(guids []string) string {
-	a.mu.RLock()
-	manager := a.manager
-	a.mu.RUnlock()
-
-	if manager == nil {
-		return fail("请先选择 KKS 根目录。")
-	}
-	isolated, bytes, skipped, failed, err := manager.CommitIsolateExtra(guids)
-	for _, f := range failed {
-		a.emitLog("warn", "isolate-extra", f)
-	}
-	if err != nil {
-		return fail(err.Error())
-	}
-	a.emitLog("success", "isolate-extra",
-		fmt.Sprintf("[isolate-extra] 隔离 %d 个，释放 %s，跳过 %d 个",
-			isolated, formatBytes(bytes), skipped))
-	return ok(map[string]interface{}{
-		"isolated": isolated,
-		"bytes":    bytes,
-		"skipped":  skipped,
-		"failed":   failed,
-	}, fmt.Sprintf("已隔离 %d 个 zipmod，释放 %s。", isolated, formatBytes(bytes)))
-}
-
-// ---------------------------------------------------------------------------
 // 10. 辅助接口
 // ---------------------------------------------------------------------------
 
@@ -1543,36 +1300,7 @@ func (a *App) GetKKSInfo() string {
 	return ok(map[string]interface{}{
 		"kksRoot":      manager.KksRoot,
 		"delCardsRoot": manager.DelCardsRoot,
-		"modsDir":      manager.ModsDir(),
-		"zipmodDel":    manager.DelZipmodDir(),
 		"kinds":        kinds,
-	}, "")
-}
-
-// GetGlobalDepInfo 返回全局依赖图的统计信息，用于验证隔离安全性。
-func (a *App) GetGlobalDepInfo() string {
-	a.mu.RLock()
-	manager := a.manager
-	a.mu.RUnlock()
-
-	if manager == nil {
-		return fail("请先选择 KKS 根目录。")
-	}
-
-	manager.mu.RLock()
-	defer manager.mu.RUnlock()
-
-	guidCount := len(manager.GlobalDepMap)
-	refCount := 0
-	for _, refs := range manager.GlobalDepMap {
-		refCount += len(refs)
-	}
-	return ok(map[string]interface{}{
-		"guidCount":   guidCount,
-		"refCount":    refCount,
-		"zipmodCount": len(manager.ZipmodDB),
-		"fileCount":   len(manager.FileDeps),
-		"scanned":     manager.Scanned,
 	}, "")
 }
 

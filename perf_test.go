@@ -113,27 +113,4 @@ func TestFolderStatsPreviewLimit(t *testing.T) {
 	}
 }
 
-// TestGuardPerformance 验证依赖判定是纯内存操作。
-func TestGuardPerformance(t *testing.T) {
-	env := newTestEnv(t)
-	m := env.manager
 
-	// 10000 条引用关系
-	m.FileDeps = make(map[string][]string, 10000)
-	for i := 0; i < 10000; i++ {
-		p := filepath.Join("C:\\KK", "card"+string(rune('a'+i%26))+string(rune('a'+i/26))+".png")
-		m.FileDeps[p] = []string{"guid.shared"}
-	}
-	m.derive()
-
-	start := time.Now()
-	for i := 0; i < 100; i++ {
-		m.IsZipmodSafeToMove("guid.shared")
-	}
-	elapsed := time.Since(start)
-
-	t.Logf("100 次依赖判定耗时 %v", elapsed)
-	if elapsed > 100*time.Millisecond {
-		t.Errorf("100 次判定耗时 %v，超出 100ms 目标", elapsed)
-	}
-}

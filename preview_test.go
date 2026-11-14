@@ -217,15 +217,18 @@ func TestStudioCharDelDirNotCreated(t *testing.T) {
 		}
 	}
 
-	// 标准隔离子目录数量应为 6 + 1(zipmod)
+	// 标准隔离子目录数量应为 6（v2.4 起不再创建 DEL-zipmod）
 	expected := []string{
 		"DEL-female_card", "DEL-male_card", "DEL-scene",
-		"DEL-pose", "DEL-coord_f", "DEL-coord_m", "DEL-zipmod",
+		"DEL-pose", "DEL-coord_f", "DEL-coord_m",
 	}
 	for _, name := range expected {
 		if _, err := os.Stat(filepath.Join(env.delRoot, name)); err != nil {
 			t.Errorf("隔离目录 %s 未创建: %v", name, err)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(env.delRoot, "DEL-zipmod")); !os.IsNotExist(err) {
+		t.Error("不应创建 DEL-zipmod 目录")
 	}
 }
 

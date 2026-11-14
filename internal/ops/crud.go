@@ -452,11 +452,3 @@ func (s *TrashStore) Purge(trashRels []string) PurgeResult {
 	}
 	return res
 }
-
-// SpecOfMods 判断 zipmod（mods 目录下的文件）所属种类。
-func SpecOfMods(abs, modsDir string) (string, bool) {
-	if !strings.HasPrefix(abs, modsDir) {
-		return "", false
-	}
-	return "zipmod", true
-}
