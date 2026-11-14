@@ -85,15 +85,6 @@
             line-height: 1.35;
         }
 
-        /* zipmod 占用数（§5.3）：红色数字，0 时灰色 */
-        .ref-count {
-            margin-left: auto; min-width: 92px; text-align: right;
-            font-weight: 600; font-size: 12px; color: #c62828;
-            font-variant-numeric: tabular-nums;
-            flex-shrink: 0;
-        }
-        .ref-count.is-zero { color: var(--text-3); font-weight: 400; }
-
         /* 当前操作侧提示（v2.2 FIX-04）：中列按钮作用于哪一侧 */
         .list-panel.is-active-side { box-shadow: inset 0 0 0 2px var(--accent); }
         button:disabled { opacity: .45; cursor: not-allowed; }
@@ -352,7 +343,7 @@
             margin-top: 3px; font-size: 12px; color: var(--text-3);
         }
 
-        /* 文字说明区域（zipmod 插件引用，不铺图标） */
+        /* 文字说明区域（不铺图标） */
         .panel-summary {
             padding: 8px 10px;
             background: #f7f9fb;
@@ -571,7 +562,6 @@
                 <option value="pose">POSE 动作</option>
                 <option value="coord_f">女性服装 (Coordinate)</option>
                 <option value="coord_m">男性服装 (Coordinate)</option>
-                <option value="zipmod">Zipmod (只读)</option>
                 <option value="invisible">隐藏的文件夹</option>
                 <option value="trash">回收站 (DELED)</option>
             </select>
@@ -602,9 +592,6 @@
             <button class="btn-reset btn-free-only" id="btn-new-folder" style="display:none;">＋ 新建</button>
             <button class="btn-reset btn-free-only" id="btn-rename" style="display:none;">✎ 重命名</button>
             <button class="btn-reset btn-free-only" id="btn-delete" style="display:none; background:#c62828; color:#fff;">🗑 删除</button>
-            <!-- zipmod 管理（仅 zipmod 模式，§7） -->
-            <button class="btn-reset btn-zipmod-only" id="btn-fix-missing" style="display:none; background:#d99e00; color:#fff;">🩹 修复缺失 zipmod</button>
-            <button class="btn-reset btn-zipmod-only" id="btn-isolate-extra" style="display:none;">🧹 隔离多余 zipmod</button>
             <!-- 回收站操作（仅回收站模式） -->
             <button class="btn-reset" id="btn-trash-restore" style="display:none; background:#107c10; color:#fff;">♻ 还原</button>
             <button class="btn-reset" id="btn-trash-purge" style="display:none; background:#c62828; color:#fff;">⚠ 彻底删除</button>
@@ -714,8 +701,7 @@
         "scene":       "场景卡 (Scene)",
         "pose":        "POSE 动作",
         "coord_f":     "女性服装 (Coordinate)",
-        "coord_m":     "男性服装 (Coordinate)",
-        "zipmod":      "Zipmod"
+        "coord_m":     "男性服装 (Coordinate)"
     };
 
     // 状态与 DOM
@@ -869,7 +855,7 @@
 
         log(isFree
             ? '已切换到「自由修改模式」：可自由复制/剪切/粘贴，请自行确保依赖安全。'
-            : '已切换到「安全加载隔离模式」：隔离与启用会严格校验 zipmod 依赖。');
+            : '已切换到「安全加载隔离模式」：隔离与启用会先规划再执行、失败可回滚。');
     }
 
     elBtnMode.onclick = () => {
@@ -1094,25 +1080,12 @@
                 // 单卡大图：只有一个格子，不铺网格
                 const infoText = (panel.focus && panel.focus.info) || '';
                 if (tiles.length) section.appendChild(renderSingle(tiles[0], infoText));
-            } else if (sec.layout === 'summary') {
-                // 纯文字说明（zipmod 的 dll 插件引用数）
-                const box = document.createElement('div');
-                box.className = 'panel-summary';
-                tiles.forEach((t, i) => {
-                    const line = document.createElement('div');
-                    if (i > 0) line.className = 'sub';
-                    line.innerText = t.name || '';
-                    box.appendChild(line);
-                });
-                section.appendChild(box);
-            } else if (sec.layout === 'list') {
-                section.appendChild(renderPluginList(tiles));
             } else {
                 const grid = document.createElement('div');
                 grid.className = 'panel-grid';
                 tiles.forEach(t => grid.appendChild(renderTile(t, sec)));
                 section.appendChild(grid);
-                // zipmod 全量列表：只按可视区请求缩略图（v2.2 FIX-03）
+                // 全量列表：只按可视区请求缩略图（v2.2 FIX-03）
                 if (sec.lazy) observeLazyCells(grid);
             }
 
@@ -1141,12 +1114,6 @@
         elPanelInfoTitle.innerText = focusInfo.name || '未选择文件';
         const info = focusInfo.info || '';
         elPanelInfoSub.innerText = info;
-        elPanelInfoSub.classList.toggle('panel-info-warn', info.includes('无法识别 GUID'));
-        // 占用数可点击 → 打开占用详情
-        const guid = currentZipmodGuid();
-        elPanelInfoSub.style.cursor = guid ? 'pointer' : 'default';
-        elPanelInfoSub.onclick = guid ? () => showZipmodRefDetail(guid) : null;
-        elPanelInfoSub.title = guid ? '点击查看占用详情' : '';
     }
 
     // renderTile 渲染一个格子。
@@ -1214,7 +1181,7 @@
     // ---------------------------------------------------------------------
     // 缩略图懒加载（v2.2 FIX-03）
     //
-    // zipmod 的引用列表是**全量**的（可能 500 张）。若后端预请求，
+    // 引用列表是**全量**的（可能 500 张）。若后端预请求，
     // 等于 500 次 os.Stat + 500 个队列任务，切换焦点会瞬间打满队列。
     // 所以后端只给 thumbKey，前端按可视区请求：初始只加载首屏一两行。
     // ---------------------------------------------------------------------
@@ -1333,48 +1300,13 @@
         return wrap;
     }
 
-    // renderPluginList 渲染插件列表（1 列行式）。
-    function renderPluginList(tiles) {
-        const list = document.createElement('div');
-        list.className = 'panel-list';
-        tiles.forEach(t => {
-            const row = document.createElement('div');
-            row.className = 'panel-list-row';
-            const ico = document.createElement('span');
-            ico.className = 'ico';
-            ico.innerText = t.kind === 'more' ? '⋯' : '🔌';
-            row.appendChild(ico);
-
-            const txt = document.createElement('div');
-            txt.className = 'txt';
-            const nm = document.createElement('div');
-            nm.className = 'nm';
-            nm.innerText = t.name || '';
-            txt.appendChild(nm);
-            if (t.badge) {
-                const sub = document.createElement('div');
-                sub.className = 'sub';
-                sub.innerText = t.badge;
-                txt.appendChild(sub);
-            }
-            row.appendChild(txt);
-
-            if (t.kind !== 'more') {
-                row.title = t.abs || '';
-                row.onclick = () => showZipmodPluginDetail(t.abs);
-            }
-            list.appendChild(row);
-        });
-        return list;
-    }
-
     // focusByAbs 按绝对路径聚焦某个条目（九宫格点击时用）。
     function focusByAbs(abs) {
         const side = panelSide;
         const nodes = side === 'left' ? leftNodes : rightNodes;
         const item = nodes.find(n => n.id === abs);
         if (!item) {
-            // 不在当前列表内（例如 zipmod 引用了别处的卡片）→ 仍刷新预览
+            // 不在当前列表内（跨目录引用）→ 仍刷新预览
             renderFocusExternal(abs);
             return;
         }
@@ -1385,90 +1317,6 @@
     function renderFocusExternal(abs) {
         elPanelInfoTitle.innerText = abs.split(/[\\/]/).pop();
         elPanelInfoSub.innerText = abs;
-    }
-
-    // showZipmodPluginDetail 展示插件的命中详情。
-    async function showZipmodPluginDetail(abs) {
-        const res = await callBackend('GetZipmodDetail', currentZipmodGuid());
-        if (!res.success) {
-            showAlert(res.message || '无法获取详情。');
-            return;
-        }
-        const d = res.data || {};
-        const plugins = d.plugins || [];
-        const target = plugins.find(p => p.abs === abs);
-        if (!target) {
-            showAlert('未找到该插件的详情。');
-            return;
-        }
-        const html = `<div>${escapeHtml(target.abs)}</div>
-            <div style="margin-top:8px;">命中方式：<b>${escapeHtml(target.hitMode || '未知')}</b></div>
-            <div class="modal-list">${(target.guids || []).map(g => `<div>${escapeHtml(g)}</div>`).join('')}</div>`;
-        openModal('插件命中详情', html, [{ label: '知道了', kind: 'primary' }]);
-    }
-
-    // currentZipmodGuid 返回当前焦点 zipmod 的 GUID。
-    function currentZipmodGuid() {
-        const focus = panelSide === 'left' ? leftFocus : rightFocus;
-        if (!focus) return '';
-        if (focus.guid) return focus.guid;
-        // 兜底：从节点的 Mods 列表取（Mods[0] 就是 GUID）
-        if (focus.mods && focus.mods.length) return focus.mods[0];
-        return '';
-    }
-
-    // showZipmodRefDetail 展示 zipmod 的占用详情弹窗。
-    //
-    // 这是「为什么这个 mod 隔离不了」的关键信息：
-    // 哪些卡片引用它、哪些 DLL 硬编码了它的 GUID。
-    async function showZipmodRefDetail(guid) {
-        if (!guid) {
-            showAlert('无法识别该 zipmod 的 GUID。');
-            return;
-        }
-        const res = await callBackend('GetZipmodDetail', guid);
-        if (!res.success) {
-            showAlert(res.message || '无法获取占用详情。');
-            return;
-        }
-        const d = res.data || {};
-        const cards = d.cards || [];
-        const plugins = d.plugins || [];
-
-        let html = `<div style="margin-bottom:10px;">
-            <b>${escapeHtml(d.base || d.path || guid)}</b><br>
-            <span style="color:var(--text-3);font-size:12px;">GUID: ${escapeHtml(guid)}</span><br>
-            被 <b>${d.refCards || 0}</b> 个卡片 + <b>${d.refPlugins || 0}</b> 个插件引用
-        </div>`;
-
-        if (d.parseErr) {
-            html += `<div style="color:var(--warning);margin-bottom:8px;">解析异常：${escapeHtml(d.parseErr)}</div>`;
-        }
-
-        if (cards.length) {
-            html += `<div style="font-weight:600;margin:8px 0 4px;">引用它的卡片（${cards.length}）</div>`;
-            html += '<div class="modal-list">';
-            cards.slice(0, 50).forEach(c => {
-                html += `<div>${escapeHtml(c)}</div>`;
-            });
-            html += '</div>';
-        }
-
-        if (plugins.length) {
-            html += `<div style="font-weight:600;margin:10px 0 4px;">硬编码引用它的插件（${plugins.length}）</div>`;
-            html += '<div class="modal-list">';
-            plugins.forEach(p => {
-                html += `<div>${escapeHtml(p.name)} <span style="color:var(--text-3)">[${escapeHtml(p.hitMode || '?')}]</span><br>` +
-                        `<span style="color:var(--text-3);font-size:11px;">${escapeHtml(p.rel)}</span></div>`;
-            });
-            html += '</div>';
-        }
-
-        if (!cards.length && !plugins.length) {
-            html += '<div style="color:var(--text-3);margin-top:8px;">没有任何引用 —— 可作为「多余 zipmod」隔离。</div>';
-        }
-
-        openModal('占用详情', html, [{ label: '知道了', kind: 'primary' }]);
     }
 
     function isInteractive(target) {
@@ -1599,6 +1447,11 @@
                 // 数据来自后端 FolderStats.totalFiles，不额外扫盘。
                 const stats = item.folderStats;
                 const isEmpty = !stats || stats.totalFiles === 0;
+                // 第三列：文件夹统一显示递归文件数
+                const countSpan = document.createElement('span');
+                countSpan.className = 'size';
+                countSpan.innerText = `${stats ? stats.totalFiles : 0} 个文件`;
+                div.appendChild(countSpan);
                 if (isEmpty) {
                     const hideBtn = document.createElement('button');
                     hideBtn.className = 'btn-hide-folder row-action';
@@ -1607,13 +1460,6 @@
                     hideBtn.innerHTML = '🚫👁';
                     div.appendChild(hideBtn);
                 }
-            } else if (item.type === 'mod') {
-                // zipmod：第三列显示红色占用数（不是文件大小）
-                const span = document.createElement('span');
-                span.className = 'ref-count' + (item.refCount === 0 ? ' is-zero' : '');
-                span.textContent = String(item.refCount || 0);
-                span.title = `被 ${item.refCount || 0} 个文件占用：卡片 ${item.refCards || 0}，插件 ${item.refPlugins || 0}`;
-                div.appendChild(span);
             } else if (item.type === 'hidden') {
                 // 隐藏项用灰色小标签区分，不靠图标
                 const tag = document.createElement('span');
@@ -1643,10 +1489,7 @@
 
     async function loadLeft() {
         let res;
-        if (currentMode === 'zipmod') {
-            // zipmod 模式：左侧展示 mods 目录中已安装的 zipmod
-            res = await callBackend('GetInstalledModsData');
-        } else if (currentMode === 'invisible') {
+        if (currentMode === 'invisible') {
             res = await callBackend('GetInvisibleTreeData');
             if (res.success) {
                 const d = res.data || {};
@@ -1693,9 +1536,7 @@
 
     async function loadRight() {
         let res;
-        if (currentMode === 'zipmod') {
-            res = await callBackend('GetModsTreeData');
-        } else if (currentMode === 'invisible') {
+        if (currentMode === 'invisible') {
             res = await callBackend('GetInvisibleTreeData');
             if (res.success) {
                 const d = res.data || {};
@@ -1801,11 +1642,6 @@
 
         document.getElementById('btn-trash-restore').style.display = isTrash ? 'block' : 'none';
         document.getElementById('btn-trash-purge').style.display = isTrash ? 'block' : 'none';
-
-        // zipmod 管理按钮：仅 zipmod 模式
-        const isZipmod = currentMode === 'zipmod';
-        document.getElementById('btn-fix-missing').style.display = isZipmod ? 'block' : 'none';
-        document.getElementById('btn-isolate-extra').style.display = isZipmod ? 'block' : 'none';
 
         // 隔离/启用在回收站与隐藏模式下禁用
         elBtnExecLeft.disabled = isTrash || isInvisible;
@@ -2109,152 +1945,6 @@
             showAlert(res.message || '无法打开目录。');
         }
     }
-
-    // ---------------------------------------------------------------------
-    // zipmod 管理（v2.1 §7）—— 两阶段：Plan → 确认 → Commit
-    //
-    // 按钮在上一轮实现中只加了 HTML/CSS，没有绑定处理器（点了没反应）。
-    // 这里补完两个入口，避免留下 FIX-05 那类「静默失败」的死按钮。
-    // ---------------------------------------------------------------------
-
-    // planCheckedGUIDs 读出计划对话框里勾选的 GUID。
-    function planCheckedGUIDs(selector) {
-        return Array.from(document.querySelectorAll(selector))
-            .filter(el => el.checked)
-            .map(el => el.value);
-    }
-
-    // doPlanFixMissing 「修复缺失 zipmod」：先出计划，再确认执行。
-    async function doPlanFixMissing() {
-        const res = await callBackend('PlanFixMissing');
-        if (!res.success) {
-            showAlert(res.message || '无法生成修复计划。');
-            return;
-        }
-        const plan = res.data || {};
-        const rec = plan.recoverable || [];
-        const unrec = plan.unrecoverable || [];
-        if (!rec.length && !unrec.length) {
-            toast('没有缺失的 zipmod', 'success');
-            return;
-        }
-
-        let html = '';
-        if (rec.length) {
-            const fromDel = rec.filter(r => r.source === 'del-zipmod').length;
-            html += `<div class="plan-head"><span>可修复 ${rec.length} 个（共 ${formatSize(plan.totalBytes || 0) || '0 B'}）</span>` +
-                    `<span class="plan-sub">隔离区 ${fromDel} / 回收站 ${rec.length - fromDel}</span></div>`;
-            html += '<div class="plan-list">';
-            rec.forEach(r => {
-                html += `<label class="plan-item">` +
-                    `<input type="checkbox" class="fix-check" value="${escapeHtml(r.guid)}" checked>` +
-                    `<span class="txt"><span class="g">${escapeHtml(r.name || r.guid)}</span><br>` +
-                    `<span class="m">被 ${r.refCards || 0} 卡 + ${r.refPlugins || 0} 插件使用 · ${escapeHtml(r.source === 'deled' ? '回收站' : '隔离区')} → mods/</span></span>` +
-                    `</label>`;
-            });
-            html += '</div>';
-        }
-        if (unrec.length) {
-            html += `<div class="plan-head"><span class="plan-blocked">无法修复 ${unrec.length} 个（本地不存在，需重新下载）</span></div>`;
-            html += '<div class="plan-list">';
-            unrec.forEach(u => {
-                const sample = (u.sample || []).join('、');
-                html += `<div class="plan-item"><span class="txt"><span class="g">${escapeHtml(u.guid)}</span><br>` +
-                        `<span class="m">被 ${u.refCards || 0} 卡 + ${u.refPlugins || 0} 插件使用 · 例：${escapeHtml(sample)}</span></span></div>`;
-            });
-            html += '</div>';
-        }
-
-        openModal('修复缺失 zipmod', html, [
-            { label: '取消' },
-            {
-                label: `恢复选中（${rec.length}）`,
-                kind: 'primary',
-                onClick: async () => {
-                    const guids = planCheckedGUIDs('.fix-check');
-                    if (!guids.length) {
-                        toast('没有勾选任何项目', 'warn');
-                        return false;
-                    }
-                    const r = await callBackend('CommitFixMissing', guids);
-                    if (!r.success) {
-                        showAlert(r.message || '修复失败。');
-                        return;
-                    }
-                    const d = r.data || {};
-                    toast(`已恢复 ${d.restored || 0} 个 zipmod`, 'success');
-                    await refreshAll();
-                },
-            },
-        ]);
-    }
-
-    // doPlanIsolateExtra 「隔离多余 zipmod」：先出计划，再确认执行。
-    //
-    // 后端已按三条件严格筛选（无卡片引用 / 无插件引用 / 无其它 mod 依赖），
-    // 这里只负责把候选与「永不自动隔离」清单如实呈现给用户。
-    async function doPlanIsolateExtra() {
-        const res = await callBackend('PlanIsolateExtra');
-        if (!res.success) {
-            showAlert(res.message || '无法生成隔离计划。');
-            return;
-        }
-        const plan = res.data || {};
-        const candidates = plan.candidates || [];
-        const skipped = plan.skipped || [];
-        if (!candidates.length) {
-            toast('没有多余的 zipmod', 'success');
-            return;
-        }
-
-        let html = `<div class="plan-head"><span>将隔离 ${candidates.length} 个（共 ${formatSize(plan.totalBytes || 0) || '0 B'}）</span>` +
-                   `<span class="plan-sub">默认全选，可取消勾选</span></div>`;
-        html += '<div class="plan-list">';
-        candidates.forEach(c => {
-            html += `<label class="plan-item">` +
-                `<input type="checkbox" class="extra-check" value="${escapeHtml(c.guid)}" checked>` +
-                `<span class="txt"><span class="g">${escapeHtml(c.base || c.guid)}</span><br>` +
-                `<span class="m">${escapeHtml(formatSize(c.size || 0) || '0 B')} ${c.note ? '· ' + escapeHtml(c.note) : ''}</span></span>` +
-                `</label>`;
-        });
-        html += '</div>';
-
-        if (skipped.length) {
-            html += `<div class="plan-head"><span>永不自动隔离 ${skipped.length} 个</span></div>`;
-            html += '<div class="plan-list">';
-            skipped.forEach(k => {
-                html += `<div class="plan-item"><span class="txt"><span class="g">${escapeHtml(k.path || '')}</span><br>` +
-                        `<span class="m">${escapeHtml(k.reason || '')}</span></span></div>`;
-            });
-            html += '</div>';
-        }
-
-        openModal('隔离多余 zipmod', html, [
-            { label: '取消' },
-            {
-                label: `隔离选中（${candidates.length}）`,
-                kind: 'danger',
-                onClick: async () => {
-                    const guids = planCheckedGUIDs('.extra-check');
-                    if (!guids.length) {
-                        toast('没有勾选任何项目', 'warn');
-                        return false;
-                    }
-                    const r = await callBackend('CommitIsolateExtra', guids);
-                    if (!r.success) {
-                        showAlert(r.message || '隔离失败。');
-                        return;
-                    }
-                    const d = r.data || {};
-                    toast(`已隔离 ${d.isolated || 0} 个 zipmod`, 'success');
-                    await refreshAll();
-                },
-            },
-        ]);
-    }
-
-    document.getElementById('btn-fix-missing').onclick = guard(doPlanFixMissing);
-    document.getElementById('btn-isolate-extra').onclick = guard(doPlanIsolateExtra);
 
     // ---------------------------------------------------------------------
     // 历史窗口（§8.4）
@@ -3065,7 +2755,6 @@
             // 由后端递归搬空其全部内容，不重复处理、不产生空目录结构。
             paths = dedupeSelection(Array.from(leftSelected));
         }
-        if (currentMode === 'zipmod') return log('Zipmod 模式为只读视图，无法执行隔离。', 'warn');
         if (currentMode === 'invisible') return log('隐藏的文件夹模式不支持隔离。', 'warn');
 
         log(`--- 开始隔离操作 (${paths.length} 个条目) ---`);
@@ -3253,12 +2942,8 @@
             const d = e && e.payload ? e.payload : e;
             const total = d.total || 0;
             const done = d.done || 0;
-            // zipmod 与资源两个阶段各占一半进度
-            const base = d.phase === 'resource' ? 50 : 0;
-            const span = d.phase === 'resource' ? 50 : 50;
-            const percent = total > 0 ? base + (done / total) * span : base;
-            const phaseText = d.phase === 'resource' ? '正在扫描资源文件' : '正在索引 zipmod';
-            setStatus('loading', `正在加载 · ${phaseText} (${done}/${total})`, percent);
+            const percent = total > 0 ? (done / total) * 100 : 0;
+            setStatus('loading', `正在索引资源 (${done}/${total})`, percent);
         });
         window.runtime.EventsOn('scan:done', (e) => {
             const d = e && e.payload ? e.payload : e;
@@ -3293,12 +2978,6 @@
         });
         window.runtime.EventsOn('history:changed', () => {
             if (elHistoryModal.classList.contains('show')) reloadHistory();
-        });
-        window.runtime.EventsOn('scan:complete', (e) => {
-            const d = e && e.payload ? e.payload : e;
-            if (d.missingMods && d.missingMods.length) {
-                log(`提示：本地缺失 ${d.missingMods.length} 个被引用的 zipmod。`, 'warn');
-            }
         });
     }
 
