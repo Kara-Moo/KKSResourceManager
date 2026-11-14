@@ -15,10 +15,6 @@ export function CmdUndo(arg1:string):Promise<string>;
 
 export function CommitDelete(arg1:Array<string>):Promise<string>;
 
-export function CommitFixMissing(arg1:Array<string>):Promise<string>;
-
-export function CommitIsolateExtra(arg1:Array<string>):Promise<string>;
-
 export function ExecuteIsolate(arg1:Array<string>,arg2:string):Promise<string>;
 
 export function ExecuteRestore(arg1:Array<string>,arg2:string):Promise<string>;
@@ -31,11 +27,7 @@ export function GetClipboard():Promise<string>;
 
 export function GetFolderPreview(arg1:string):Promise<string>;
 
-export function GetGlobalDepInfo():Promise<string>;
-
 export function GetHistory(arg1:number,arg2:number):Promise<string>;
-
-export function GetInstalledModsData():Promise<string>;
 
 export function GetInvisibleTreeData():Promise<string>;
 
@@ -44,8 +36,6 @@ export function GetKKSInfo():Promise<string>;
 export function GetLeftTreeData(arg1:string):Promise<string>;
 
 export function GetLogs(arg1:number,arg2:string):Promise<string>;
-
-export function GetModsTreeData():Promise<string>;
 
 export function GetRightPanel(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
 
@@ -59,8 +49,6 @@ export function GetThumbStats():Promise<string>;
 
 export function GetTrashTree():Promise<string>;
 
-export function GetZipmodDetail(arg1:string):Promise<string>;
-
 export function HideFolders(arg1:Array<string>,arg2:string):Promise<string>;
 
 export function OpenDelCardsRoot():Promise<string>;
@@ -72,10 +60,6 @@ export function OpenListDirInExplorer(arg1:string,arg2:string,arg3:string):Promi
 export function PasteClipboard(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function PlanDelete(arg1:Array<string>):Promise<string>;
-
-export function PlanFixMissing():Promise<string>;
-
-export function PlanIsolateExtra():Promise<string>;
 
 export function Rescan():Promise<string>;
 

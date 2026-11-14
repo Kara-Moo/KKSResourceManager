@@ -179,8 +179,13 @@ func TestIsolateSkipsDuplicateTarget(t *testing.T) {
 	if res.MovedCards != 0 {
 		t.Errorf("目标已存在时不应移动，实际移动 %d 个", res.MovedCards)
 	}
-	if res.FailedCount == 0 {
-		t.Error("应记录至少一个失败项")
+	// v2.4 阶段 4：全部冲突 = 已经隔离过，按幂等成功处理（规格 I6/T6），
+	// 但不能移动、不能覆盖、不能丢失源文件。
+	if !res.Success {
+		t.Errorf("目标已存在时应按「已存在」幂等成功处理，日志: %v", res.Logs)
+	}
+	if res.FailedCount != 0 {
+		t.Errorf("已存在不应计为失败，实际 FailedCount=%d", res.FailedCount)
 	}
 	// 原文件必须还在
 	if _, err := os.Stat(card); err != nil {

@@ -30,14 +30,6 @@ export function CommitDelete(arg1) {
   return window['go']['main']['App']['CommitDelete'](arg1);
 }
 
-export function CommitFixMissing(arg1) {
-  return window['go']['main']['App']['CommitFixMissing'](arg1);
-}
-
-export function CommitIsolateExtra(arg1) {
-  return window['go']['main']['App']['CommitIsolateExtra'](arg1);
-}
-
 export function ExecuteIsolate(arg1, arg2) {
   return window['go']['main']['App']['ExecuteIsolate'](arg1, arg2);
 }
@@ -62,16 +54,8 @@ export function GetFolderPreview(arg1) {
   return window['go']['main']['App']['GetFolderPreview'](arg1);
 }
 
-export function GetGlobalDepInfo() {
-  return window['go']['main']['App']['GetGlobalDepInfo']();
-}
-
 export function GetHistory(arg1, arg2) {
   return window['go']['main']['App']['GetHistory'](arg1, arg2);
-}
-
-export function GetInstalledModsData() {
-  return window['go']['main']['App']['GetInstalledModsData']();
 }
 
 export function GetInvisibleTreeData() {
@@ -88,10 +72,6 @@ export function GetLeftTreeData(arg1) {
 
 export function GetLogs(arg1, arg2) {
   return window['go']['main']['App']['GetLogs'](arg1, arg2);
-}
-
-export function GetModsTreeData() {
-  return window['go']['main']['App']['GetModsTreeData']();
 }
 
 export function GetRightPanel(arg1, arg2, arg3, arg4) {
@@ -118,10 +98,6 @@ export function GetTrashTree() {
   return window['go']['main']['App']['GetTrashTree']();
 }
 
-export function GetZipmodDetail(arg1) {
-  return window['go']['main']['App']['GetZipmodDetail'](arg1);
-}
-
 export function HideFolders(arg1, arg2) {
   return window['go']['main']['App']['HideFolders'](arg1, arg2);
 }
@@ -144,14 +120,6 @@ export function PasteClipboard(arg1, arg2, arg3) {
 
 export function PlanDelete(arg1) {
   return window['go']['main']['App']['PlanDelete'](arg1);
-}
-
-export function PlanFixMissing() {
-  return window['go']['main']['App']['PlanFixMissing']();
-}
-
-export function PlanIsolateExtra() {
-  return window['go']['main']['App']['PlanIsolateExtra']();
 }
 
 export function Rescan() {

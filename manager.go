@@ -4,12 +4,14 @@ package main
 //
 // 设计红线（对应需求中的“绝对不破坏全局依赖 / 绝对不破坏原有目录结构”）：
 //
-//  1. 隔离卡片时保留原始相对目录结构，先创建目标目录再移动文件；
-//     源目录即使变空也绝不删除。
-//  2. 恢复时把文件放回原位（目录不存在则重建）；DEL 区空目录可清理，游戏目录永不删除。
+//  1. 隔离/恢复文件夹时保留原始相对目录结构，先规划再动盘；
+//     文件夹迁移完成后清理源侧空壳（仅空目录，绝不删非空目录），
+//     单独隔离文件时不动其父目录。
+//  2. 恢复时把文件放回原位（目录不存在则重建）；DEL 区空目录可清理。
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -347,29 +349,6 @@ func (m *Manager) collectFiles(root string, keep func(path string) bool) []strin
 }
 
 // collectFilesStrict 递归收集目录下的文件，遇到读取错误时返回错误。
-//
-// 与 collectFiles 的区别：后者用于全量扫描，必须容忍个别坏文件；
-// 前者用于移动操作，任何读取失败都可能导致结构丢失，因此必须报错。
-func collectFilesStrict(root string, keep func(path string) bool) ([]string, error) {
-	var files []string
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		if info.IsDir() {
-			return nil
-		}
-		if keep(path) {
-			files = append(files, path)
-		}
-		return nil
-	})
-	sort.Strings(files)
-	return files, err
-}
 
 // ---------------------------------------------------------------------------
 // 隔离
@@ -432,20 +411,16 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 		return res
 	}
 
-	// --- 1. 校验每个待隔离条目，确定其所属类型 ---
-	// 条目可以是文件，也可以是文件夹。
-	// 文件夹会被展开为其下的全部文件（保持原有相对层级），
-	// 这样目录结构天然保留，依赖图的处理逻辑也可完全复用。
-	type movePlan struct {
-		src    string
-		kind   ResourceKind
-		relDir string
-		dst    string
-	}
-	plans := make([]movePlan, 0, len(cardPaths))
+	// --- 1. 规划 ---
+	// 条目可以是文件，也可以是文件夹。文件夹展开为整棵子树：
+	// 所有普通文件都迁（不过滤扩展名），空子目录也保留结构。
+	// 先算清一次性核对：任一选中项无效（空文件夹/读失败）就整批取消，
+	// 绝不在「部分可做」时先动盘再回滚。
+	paths := dedupeSelectionPaths(cardPaths)
+	plans := make([]*TransferPlan, 0, len(paths))
 	selectedFolders, selectedFiles := 0, 0
 
-	for _, src := range cardPaths {
+	for _, src := range paths {
 		kind, relDir, ok := m.classifyResource(src)
 		if !ok {
 			res.FailedCount++
@@ -462,69 +437,84 @@ func (m *Manager) Isolate(cardPaths []string) IsolateResult {
 
 		if !info.IsDir() {
 			dst := filepath.Join(m.DelDir(kind), relDir, filepath.Base(src))
-			plans = append(plans, movePlan{src: src, kind: kind, relDir: relDir, dst: dst})
+			plan, planErr := m.planFileTransfer(src, dst, m.DelDir(kind))
+			if planErr != nil {
+				res.FailedCount++
+				res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("无法规划 %s: %v", src, planErr)})
+				continue
+			}
+			plans = append(plans, plan)
 			selectedFiles++
 			continue
 		}
 
-		// 文件夹：展开为文件列表
+		// 文件夹：整棵子树迁移
 		selectedFolders++
-		files, err := collectFilesStrict(src, func(path string) bool {
-			return core.IsCardFile(path)
-		})
-		if err != nil {
+		dstDir := filepath.Join(m.DelDir(kind), relDir, filepath.Base(src))
+		plan, planErr := m.planFolderTransfer(src, dstDir, m.SourceDir(kind))
+		if planErr != nil {
 			res.FailedCount++
-			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("读取文件夹失败 %s: %v", src, err)})
-			continue
-		}
-		if len(files) == 0 {
-			// 空文件夹：仍然记录到隔离区（保留结构）
-			dstDir := filepath.Join(m.DelDir(kind), relDir, filepath.Base(src))
-			if err := os.MkdirAll(dstDir, 0755); err != nil {
-				res.FailedCount++
-				res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("创建目标目录失败 %s: %v", dstDir, err)})
-				continue
+			if errors.Is(planErr, errEmptyFolder) {
+				res.Logs = append(res.Logs, OperationLog{"error",
+					fmt.Sprintf("「%s」是空文件夹，没有可迁移的内容。", src)})
+			} else {
+				res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("读取文件夹失败 %s: %v", src, planErr)})
 			}
-			res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[移动空文件夹] %s -> %s", src, dstDir)})
 			continue
 		}
-		for _, f := range files {
-			_, fRelDir, _ := m.classifyResource(f)
-			dst := filepath.Join(m.DelDir(kind), fRelDir, filepath.Base(f))
-			plans = append(plans, movePlan{src: f, kind: kind, relDir: fRelDir, dst: dst})
-		}
+		plans = append(plans, plan)
 	}
 
+	if res.FailedCount > 0 {
+		res.Logs = append(res.Logs, OperationLog{"warn", "存在无法处理的条目，本次未做任何改动。"})
+		return res
+	}
 	if len(plans) == 0 {
 		res.Logs = append(res.Logs, OperationLog{"error", "没有可隔离的有效文件。"})
 		return res
 	}
 
-	// --- 3. 移动资源文件（保留目录结构） ---
-	for _, p := range plans {
-		// 目标父目录若曾被隐藏删除，先重建出来
-		if err := m.ensureTargetParent(p.dst); err != nil {
+	merged := mergeTransferPlans(plans)
+
+	// --- 2. 冲突预检：全部冲突=已经隔离过（幂等）；部分冲突=整批中止 ---
+	if len(merged.Conflicts) > 0 {
+		if merged.Files == len(merged.Conflicts) {
+			res.Success = true
+			res.Logs = append(res.Logs, OperationLog{"info",
+				fmt.Sprintf("目标位置已存在 %d 个同名文件，未做任何改动。", len(merged.Conflicts))})
+			// 没有任何磁盘改动，不提交空事务（避免 history 出现 affected=0 的噪声）
+			if txn != nil {
+				_ = m.rollbackTx(txn)
+				txn = nil
+			}
+		} else {
 			res.FailedCount++
-			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("创建目标目录失败 %s: %v", filepath.Dir(p.dst), err)})
-			continue
+			res.Logs = append(res.Logs, OperationLog{"error",
+				fmt.Sprintf("目标位置已存在 %d 个同名文件，未做任何改动。", len(merged.Conflicts))})
 		}
-		if _, err := os.Stat(p.dst); err == nil {
-			res.FailedCount++
-			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("目标已存在，跳过: %s", p.dst)})
-			continue
-		}
-		if err := m.txMove(txn, p.src, p.dst); err != nil {
-			res.FailedCount++
-			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("移动失败 %s -> %s: %v", p.src, p.dst, err)})
-			continue
-		}
-		res.MovedCards++
-		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[移动资源] %s -> %s", p.src, p.dst)})
+		return res
+	}
+	if len(merged.Skipped) > 0 {
+		res.Logs = append(res.Logs, OperationLog{"warn",
+			fmt.Sprintf("跳过 %d 个符号链接：%s", len(merged.Skipped), firstN(merged.Skipped, 3))})
+	}
+
+	// --- 3. 执行（先建目录 → 移动文件 → 清理源侧空壳） ---
+	moved, dirs, dirsRemoved, execErr := m.execTransferPlan(txn, merged, func(level, msg string) {
+		res.Logs = append(res.Logs, OperationLog{level, msg})
+	})
+	res.MovedCards = moved
+	if execErr != nil {
+		res.FailedCount++
+		res.Logs = append(res.Logs, OperationLog{"error", execErr.Error()})
+		return res
 	}
 
 	res.Success = res.FailedCount == 0
 	if res.Success {
-		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("隔离完成：资源 %d 个（%d 个文件夹 / %d 个文件）。", res.MovedCards, selectedFolders, selectedFiles)})
+		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf(
+			"隔离完成：文件 %d 个（%d 个文件夹 / %d 个文件），目录 %d 个，清理源侧空目录 %d 个。",
+			res.MovedCards, selectedFolders, selectedFiles, dirs, dirsRemoved)})
 	} else {
 		res.Logs = append(res.Logs, OperationLog{"warn", fmt.Sprintf("隔离结束，存在 %d 个失败项，请查看上方日志。", res.FailedCount)})
 	}
@@ -606,7 +596,11 @@ func (m *Manager) Restore(cardPaths []string) RestoreResult {
 		return res
 	}
 
-	for _, src := range cardPaths {
+	paths := dedupeSelectionPaths(cardPaths)
+	plans := make([]*TransferPlan, 0, len(paths))
+	selectedFolders, selectedFiles := 0, 0
+
+	for _, src := range paths {
 		abs, err := filepath.Abs(src)
 		if err != nil {
 			res.FailedCount++
@@ -629,35 +623,85 @@ func (m *Manager) Restore(cardPaths []string) RestoreResult {
 			continue
 		}
 
-		// 文件夹：展开为文件列表后再逐个恢复，保持原有目录结构
-		if info, statErr := os.Stat(abs); statErr == nil && info.IsDir() {
-			files, err := collectFilesStrict(abs, func(path string) bool {
-				return core.IsCardFile(path)
-			})
-			if err != nil {
-				res.FailedCount++
-				res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("读取文件夹失败 %s: %v", abs, err)})
-				continue
-			}
-			if len(files) == 0 {
-				// 空文件夹：只重建目录
-				dstDir := filepath.Join(m.SourceDir(kind), relDir, filepath.Base(abs))
-				if err := m.ensureTargetParent(dstDir); err != nil {
-					res.FailedCount++
-					res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("重建目录失败 %s: %v", dstDir, err)})
-					continue
-				}
-				res.RestoredCard++
-				res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[恢复空文件夹] %s", dstDir)})
-				continue
-			}
-			for _, f := range files {
-				m.restoreSingleFile(f, kind, &res, txn)
-			}
+		info, statErr := os.Stat(abs)
+		if statErr != nil {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("无法访问 %s: %v", abs, statErr)})
 			continue
 		}
 
-		m.restoreSingleFile(abs, kind, &res, txn)
+		if !info.IsDir() {
+			dst := filepath.Join(m.SourceDir(kind), relDir, filepath.Base(abs))
+			plan, planErr := m.planFileTransfer(abs, dst, m.SourceDir(kind))
+			if planErr != nil {
+				res.FailedCount++
+				res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("无法规划 %s: %v", abs, planErr)})
+				continue
+			}
+			plans = append(plans, plan)
+			selectedFiles++
+			continue
+		}
+
+		// 文件夹：整棵子树恢复
+		selectedFolders++
+		dstDir := filepath.Join(m.SourceDir(kind), relDir, filepath.Base(abs))
+		plan, planErr := m.planFolderTransfer(abs, dstDir, m.DelDir(kind))
+		if planErr != nil {
+			res.FailedCount++
+			if errors.Is(planErr, errEmptyFolder) {
+				res.Logs = append(res.Logs, OperationLog{"error",
+					fmt.Sprintf("「%s」是空文件夹，没有可恢复的内容。", abs)})
+			} else {
+				res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("读取文件夹失败 %s: %v", abs, planErr)})
+			}
+			continue
+		}
+		plans = append(plans, plan)
+	}
+
+	if res.FailedCount > 0 {
+		res.Logs = append(res.Logs, OperationLog{"warn", "存在无法处理的条目，本次未做任何改动。"})
+		return res
+	}
+	if len(plans) == 0 {
+		res.Logs = append(res.Logs, OperationLog{"error", "没有可恢复的有效文件。"})
+		return res
+	}
+
+	merged := mergeTransferPlans(plans)
+
+	// 冲突预检：全部冲突=已经恢复过（幂等）；部分冲突=整批中止
+	if len(merged.Conflicts) > 0 {
+		if merged.Files == len(merged.Conflicts) {
+			res.Success = true
+			res.Logs = append(res.Logs, OperationLog{"info",
+				fmt.Sprintf("原位置已存在 %d 个同名文件，未做任何改动。", len(merged.Conflicts))})
+			// 没有任何磁盘改动，不提交空事务
+			if txn != nil {
+				_ = m.rollbackTx(txn)
+				txn = nil
+			}
+		} else {
+			res.FailedCount++
+			res.Logs = append(res.Logs, OperationLog{"error",
+				fmt.Sprintf("原位置已存在 %d 个同名文件，未做任何改动。", len(merged.Conflicts))})
+		}
+		return res
+	}
+	if len(merged.Skipped) > 0 {
+		res.Logs = append(res.Logs, OperationLog{"warn",
+			fmt.Sprintf("跳过 %d 个符号链接：%s", len(merged.Skipped), firstN(merged.Skipped, 3))})
+	}
+
+	moved, _, dirsRemoved, execErr := m.execTransferPlan(txn, merged, func(level, msg string) {
+		res.Logs = append(res.Logs, OperationLog{level, msg})
+	})
+	res.RestoredCard = moved
+	if execErr != nil {
+		res.FailedCount++
+		res.Logs = append(res.Logs, OperationLog{"error", execErr.Error()})
+		return res
 	}
 
 	// 清理 DEL 区的空目录（仅隔离区，游戏目录永不删除）
@@ -667,62 +711,13 @@ func (m *Manager) Restore(cardPaths []string) RestoreResult {
 
 	res.Success = res.FailedCount == 0
 	if res.Success {
-		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("恢复完成：资源 %d 个。", res.RestoredCard)})
+		res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf(
+			"恢复完成：文件 %d 个（%d 个文件夹 / %d 个文件），清理隔离区空目录 %d 个。",
+			res.RestoredCard, selectedFolders, selectedFiles, dirsRemoved)})
 	} else {
 		res.Logs = append(res.Logs, OperationLog{"warn", fmt.Sprintf("恢复结束，存在 %d 个失败项，请查看上方日志。", res.FailedCount)})
 	}
 	return res
-}
-
-// restoreSingleFile 把隔离区中的单个资源文件移回游戏原目录。
-//
-// 目标父目录若曾被隐藏删除，会先依据隐藏索引重建出来。
-func (m *Manager) restoreSingleFile(abs string, kind ResourceKind, res *RestoreResult, txn *tx.Tx) {
-	_, relDir, ok := m.classifyDelResource(abs)
-	if !ok {
-		res.FailedCount++
-		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("跳过：%s 不属于隔离区中的受管资源。", abs)})
-		return
-	}
-
-	dst := filepath.Join(m.SourceDir(kind), relDir, filepath.Base(abs))
-	if err := m.ensureTargetParent(dst); err != nil {
-		res.FailedCount++
-		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("重建原目录失败 %s: %v", filepath.Dir(dst), err)})
-		return
-	}
-	if _, err := os.Stat(dst); err == nil {
-		res.FailedCount++
-		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("目标已存在，跳过恢复: %s", dst)})
-		return
-	}
-	if err := m.txMove(txn, abs, dst); err != nil {
-		res.FailedCount++
-		res.Logs = append(res.Logs, OperationLog{"error", fmt.Sprintf("恢复失败 %s -> %s: %v", abs, dst, err)})
-		return
-	}
-	res.RestoredCard++
-	res.Logs = append(res.Logs, OperationLog{"success", fmt.Sprintf("[恢复资源] %s -> %s", abs, dst)})
-}
-
-// ensureTargetParent 确保目标文件的父目录存在。
-//
-// 若父目录此前被「隐藏」删除，则依据隐藏索引重建对应的目录树。
-func (m *Manager) ensureTargetParent(targetFile string) error {
-	parent := filepath.Dir(targetFile)
-	if info, err := os.Stat(parent); err == nil && info.IsDir() {
-		return nil
-	}
-	if m.invisible != nil {
-		rebuilt, err := m.invisible.EnsurePathForOperation(targetFile)
-		if err != nil {
-			return err
-		}
-		if rebuilt {
-			return nil
-		}
-	}
-	return os.MkdirAll(parent, 0755)
 }
 
 // classifyDelResource 判断隔离区中某个文件属于哪种资源类型及其相对目录。

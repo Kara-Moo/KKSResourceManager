@@ -180,7 +180,9 @@ func Undo(root, txID string) (UndoResult, error) {
 		if step.State != "done" {
 			continue
 		}
-		if step.Kind == "mkdir" {
+		if step.Kind == "mkdir" || step.Kind == "rmdir" {
+			// 目录步骤没有可校验的文件指纹：mkdir 的目标仍在，
+			// rmdir 的目标已按设计消失。撤销时由 rollbackStep 重建/回收目录。
 			continue
 		}
 		fp, err := fingerprintOf(step.Dst)

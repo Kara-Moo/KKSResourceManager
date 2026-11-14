@@ -134,6 +134,57 @@ func TestTxMkdirRollback(t *testing.T) {
 	}
 }
 
+// TestTxRmdirIfEmptyRollback 删除空目录的回滚应把目录重建回来。
+func TestTxRmdirIfEmptyRollback(t *testing.T) {
+	root := newTestRoot(t)
+	dir := filepath.Join(t.TempDir(), "emptydir")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	txn, _ := Begin(root, "rmdir", "测试删空目录")
+	removed, err := txn.RmdirIfEmpty(dir)
+	if err != nil || !removed {
+		t.Fatalf("应删除空目录，removed=%v err=%v", removed, err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("目录应已被删除")
+	}
+	if err := txn.Rollback(); err != nil {
+		t.Fatalf("回滚失败: %v", err)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Error("回滚后目录应被重建")
+	}
+}
+
+// TestTxRmdirIfEmptySkipsNonEmpty 非空目录不得删除。
+func TestTxRmdirIfEmptySkipsNonEmpty(t *testing.T) {
+	root := newTestRoot(t)
+	dir := filepath.Join(t.TempDir(), "nonempty")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	txn, _ := Begin(root, "rmdir", "测试非空目录")
+	removed, err := txn.RmdirIfEmpty(dir)
+	if err != nil {
+		t.Fatalf("非空目录不应报错: %v", err)
+	}
+	if removed {
+		t.Error("非空目录不应被删除")
+	}
+	if err := txn.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep.txt")); err != nil {
+		t.Error("非空目录中的文件不应受影响")
+	}
+}
+
 // TestTxRenameRollback 重命名的回滚应改回原名。
 func TestTxRenameRollback(t *testing.T) {
 	root := newTestRoot(t)
@@ -310,10 +361,10 @@ func TestHistoryLimit(t *testing.T) {
 	root := newTestRoot(t)
 	for i := 0; i < MaxHistory+20; i++ {
 		AppendHistory(root, HistoryEntry{
-			TxID:  newTxID(),
-			Kind:  "test",
-			Title: "entry",
-			At:    int64(i),
+			TxID:   newTxID(),
+			Kind:   "test",
+			Title:  "entry",
+			At:     int64(i),
 			Status: "committed",
 		})
 	}

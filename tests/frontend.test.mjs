@@ -69,11 +69,6 @@ const mockApp = {
   },
   GetRightTreeData: (mode) => JSON.stringify({ success: true, message: '', data: { mode, root: 'C:\\\\DEL', rootName: 'DEL', nodes: window.__rightNodes || [] } }),
   GetInvisibleTreeData: () => JSON.stringify({ success: true, message: '', data: ${JSON.stringify(hiddenTree)} }),
-  GetInstalledModsData: () => JSON.stringify({ success: true, message: '', data: { mode: 'zipmod', root: 'C:/KK/mods', rootName: 'mods', nodes: [
-    { id: 'C:/KK/mods/used.zipmod', name: 'used.zipmod', type: 'mod', path: '', mods: ['g1'], modNames: ['used.zipmod'], size: 1024, guid: 'g1', refCount: 15, refCards: 14, refPlugins: 1 },
-    { id: 'C:/KK/mods/free.zipmod', name: 'free.zipmod', type: 'mod', path: '', mods: ['g2'], modNames: ['free.zipmod'], size: 2048, guid: 'g2', refCount: 0, refCards: 0, refPlugins: 0 },
-  ]}}),
-  GetModsTreeData: () => JSON.stringify({ success: true, message: '', data: { nodes: [] } }),
   GetCardPreview: (p) => JSON.stringify({ success: true, message: '', data: { dataUri: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==' } }),
   // v2.1：右栏面板一次请求出全部
   GetRightPanel: (side, mode, rel, focusAbs) => {
@@ -136,36 +131,6 @@ const mockApp = {
       pending: false,
     })) });
   },
-  PlanFixMissing: () => {
-    window.__calls.push(['PlanFixMissing']);
-    return JSON.stringify({ success: true, message: '', data: {
-      planId: 'fix-1', totalBytes: 1048576,
-      recoverable: [
-        { guid: 'missing.a', name: 'a.zipmod', from: 'C:/DEL/zipmod/a.zipmod', to: 'C:/KK/mods/a.zipmod', refCards: 3, refPlugins: 0, source: 'del-zipmod' },
-        { guid: 'missing.b', name: 'b.zipmod', from: 'C:/DELED/b.zipmod', to: 'C:/KK/mods/b.zipmod', refCards: 1, refPlugins: 1, source: 'deled' },
-      ],
-      unrecoverable: [ { guid: 'missing.c', refCards: 2, refPlugins: 0, sample: ['c1.png', 'c2.png'] } ],
-    }});
-  },
-  CommitFixMissing: (guids) => {
-    window.__calls.push(['CommitFixMissing', guids]);
-    return JSON.stringify({ success: true, message: 'ok', data: { restored: guids.length, skipped: 0, failed: [] } });
-  },
-  PlanIsolateExtra: () => {
-    window.__calls.push(['PlanIsolateExtra']);
-    return JSON.stringify({ success: true, message: '', data: {
-      planId: 'extra-1', totalBytes: 2097152,
-      candidates: [
-        { guid: 'extra.a', base: 'unused-a.zipmod', path: 'C:/KK/mods/unused-a.zipmod', size: 1048576, note: '' },
-        { guid: 'extra.b', base: 'unused-b.zipmod', path: 'C:/KK/mods/unused-b.zipmod', size: 1048576, note: '重复副本' },
-      ],
-      skipped: [ { path: 'C:/KK/mods/timeline.zipmod', reason: '被插件 Timeline.dll 硬编码引用' } ],
-    }});
-  },
-  CommitIsolateExtra: (guids) => {
-    window.__calls.push(['CommitIsolateExtra', guids]);
-    return JSON.stringify({ success: true, message: 'ok', data: { isolated: guids.length, bytes: 2097152, skipped: 0, failed: [] } });
-  },
   OpenFolderInExplorer: (abs) => {
     window.__calls.push(['OpenFolderInExplorer', abs]);
     return JSON.stringify({ success: true, message: 'ok', data: null });
@@ -174,7 +139,6 @@ const mockApp = {
     window.__calls.push(['OpenListDirInExplorer', side, mode, rel]);
     return JSON.stringify({ success: true, message: 'ok', data: null });
   },
-  GetZipmodDetail: (guid) => JSON.stringify({ success: true, message: '', data: { guid, path: 'C:/x.zipmod', base: 'x.zipmod', size: 100, cards: [], plugins: [], refCards: 0, refPlugins: 0, parseErr: '' } }),
   GetFolderPreview: (p) => JSON.stringify({ success: true, message: '', data: {
     stats: { subfolderCount: 2, cardCount: 3, totalFiles: 7, totalSize: 1234 },
     previews: [{ name: 's1', path: 'p1', count: 3, dataUri: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==' }],
@@ -471,31 +435,6 @@ console.log('\n【11】thumb:ready 局部补图（v2.1 §10.3）');
   check('补图后出现 img 元素', imgs >= 1, `实际 ${imgs} 个`);
 }
 
-console.log('\n【12】zipmod 占用数：红色数字（v2.1 §11.3）');
-{
-  await page.selectOption('#mode-select', 'zipmod');
-  await page.waitForTimeout(500);
-
-  const counts = await page.locator('#left-list .ref-count').count();
-  check('zipmod 行显示占用数列', counts === 2, `实际 ${counts} 个`);
-
-  const texts = await page.locator('#left-list .ref-count').allInnerTexts();
-  check('占用数正确（15 / 0）', texts[0] === '15' && texts[1] === '0', `实际 ${texts.join(',')}`);
-
-  const colors = await page.evaluate(() => {
-    const els = Array.from(document.querySelectorAll('#left-list .ref-count'));
-    return els.map(e => getComputedStyle(e).color + '|' + e.className);
-  });
-  check('有引用的显示红色', colors[0].includes('rgb(198, 40, 40)'), `实际 ${colors[0]}`);
-  check('0 引用的显示灰色', colors[1].includes('is-zero'), `实际 ${colors[1]}`);
-
-  const tooltip = await page.locator('#left-list .ref-count').first().getAttribute('title');
-  check('tooltip 含占用明细', tooltip && tooltip.includes('卡片') && tooltip.includes('插件'), `实际 "${tooltip}"`);
-
-  // 不应显示文件大小
-  const sizes = await page.locator('#left-list .size').count();
-  check('zipmod 行不显示文件大小', sizes === 0, `实际 ${sizes} 个`);
-}
 
 console.log('\n【13】历史窗口：列表 + 撤销（v2.1 §11.6）');
 {
@@ -539,6 +478,10 @@ console.log('\n【13】历史窗口：列表 + 撤销（v2.1 §11.6）');
 
 console.log('\n【14】自由模式：按钮可见性与回收站（v2.1 §11.4）');
 {
+  // 前面的隐藏模式用例没有切回普通资源模式，这里先切回角色卡
+  await page.selectOption('#mode-select', 'female_card');
+  await page.waitForTimeout(400);
+
   // 安全模式下新建/重命名/删除按钮应隐藏
   let visible = await page.locator('#btn-new-folder').isVisible();
   check('安全模式下无「新建」入口', !visible);
@@ -727,68 +670,6 @@ console.log('\n【19】FIX-02：卡片焦点单张大图');
 }
 
 
-console.log('\n【20】FIX-03：zipmod 引用全量显示 + 懒加载');
-{
-  // 33 个引用，全部应渲染，且没有「还有 N」
-  await page.evaluate(() => {
-    const tiles = [];
-    for (let i = 0; i < 33; i++) {
-      tiles.push({
-        kind: 'card',
-        name: 'card_' + String(i).padStart(2, '0') + '.png',
-        rel: 'cards/card_' + i + '.png',
-        abs: 'C:/KK/female/cards/card_' + i + '.png',
-        badge: '',
-        thumbKey: 'key-card_' + i + '.png',
-        thumb: '',
-        thumbPreview: '',
-        pending: true,
-      });
-    }
-    window.__panelData = {
-      focus: { kind: 'mod', name: 'gyobobo.zipmod', abs: 'C:/KK/mods/gyobobo.zipmod', info: '被 33 个文件占用（卡片 33 / 插件 0）' },
-      sections: [
-        { id: 'cards', title: '使用此 zipmod 的卡片', layout: 'grid', total: 33, tiles, more: 0, moreLabel: '', visible: true, empty: '', lazy: true },
-        { id: 'plugins', title: '引用此 GUID 的插件', layout: 'list', total: 0, tiles: [], more: 0, moreLabel: '', visible: true, empty: '未被任何插件硬编码引用', lazy: false },
-      ],
-      gen: 20,
-    };
-    window.__thumbBatchCalls.length = 0;
-  });
-  await page.evaluate(async () => { await refreshPanel(); });
-  await page.waitForTimeout(600);
-
-  const cells = await page.locator('#panel-sections .panel-cell').count();
-  check('33 个引用渲染 33 个格子', cells === 33, `实际 ${cells} 个`);
-
-  const moreCells = await page.locator('#panel-sections .panel-cell.is-more').count();
-  check('zipmod 不出现「还有」格', moreCells === 0, `实际 ${moreCells} 个`);
-
-  const bodyText = await page.locator('#panel-sections').innerText();
-  check('页面文本不含「还有」', !bodyText.includes('还有'), `实际含"还有"`);
-
-  // 行数：33 格 / 3 列 = 11 行
-  const rows = await page.evaluate(() => {
-    const g = document.querySelector('#panel-sections .panel-grid');
-    if (!g) return 0;
-    const tops = new Set(Array.from(g.children).map(c => Math.round(c.getBoundingClientRect().top)));
-    return tops.size;
-  });
-  check('33 格排成 11 行', rows === 11, `实际 ${rows} 行`);
-
-  // 懒加载：应通过 GetThumbBatch 分批请求，而不是后端预生成
-  const calls = await page.evaluate(() => window.__thumbBatchCalls.length);
-  check('触发 GetThumbBatch 懒加载', calls >= 1, `实际 ${calls} 次`);
-
-  const maxBatch = await page.evaluate(() => {
-    return window.__thumbBatchCalls.reduce((m, b) => Math.max(m, b.length), 0);
-  });
-  check('每批请求 ≤12 个', maxBatch <= 12, `实际最大 ${maxBatch}`);
-
-  // 可视区先出图：首屏格子应有 img
-  const imgs = await page.locator('#panel-sections .panel-cell img').count();
-  check('可视区缩略图已补上', imgs >= 1, `实际 ${imgs} 个`);
-}
 
 
 console.log('\n【21】FIX-04：删除按钮自动择侧');
@@ -873,46 +754,6 @@ console.log('\n【21】FIX-04：删除按钮自动择侧');
 }
 
 
-console.log('\n【22】阶段F 死按钮收口：zipmod 两个管理入口');
-{
-  await page.selectOption('#mode-select', 'zipmod');
-  await page.waitForTimeout(500);
-
-  const fixVisible = await page.locator('#btn-fix-missing').isVisible();
-  const extraVisible = await page.locator('#btn-isolate-extra').isVisible();
-  check('zipmod 模式显示两个管理按钮', fixVisible && extraVisible);
-
-  // 修复缺失
-  await page.locator('#btn-fix-missing').click();
-  await page.waitForTimeout(500);
-  let shown = await page.locator('#modal-mask.show').count();
-  check('点「修复缺失」弹计划对话框', shown === 1);
-  let body = shown ? await page.locator('#modal-body').innerText() : '';
-  check('计划列出可修复与无法修复', body.includes('可修复 2') && body.includes('无法修复 1'), `实际 "${body.slice(0, 100)}"`);
-  const fixChecks = await page.locator('.fix-check').count();
-  check('可修复项默认全选', fixChecks === 2, `实际 ${fixChecks} 个`);
-
-  // 点确认 → 调用 CommitFixMissing
-  await page.locator('#modal-foot button').nth(1).click();
-  await page.waitForTimeout(500);
-  const commitFix = await page.evaluate(() => window.__calls.filter(c => c[0] === 'CommitFixMissing').length);
-  check('确认后调用 CommitFixMissing', commitFix === 1, `实际 ${commitFix} 次`);
-
-  // 隔离多余
-  await page.locator('#btn-isolate-extra').click();
-  await page.waitForTimeout(500);
-  shown = await page.locator('#modal-mask.show').count();
-  check('点「隔离多余」弹计划对话框', shown === 1);
-  body = shown ? await page.locator('#modal-body').innerText() : '';
-  check('计划列出候选与永不自动隔离清单', body.includes('将隔离 2') && body.includes('永不自动隔离'), `实际 "${body.slice(0, 100)}"`);
-  const extraChecks = await page.locator('.extra-check').count();
-  check('候选默认全选', extraChecks === 2, `实际 ${extraChecks} 个`);
-
-  await page.locator('#modal-foot button').nth(1).click();
-  await page.waitForTimeout(500);
-  const commitExtra = await page.evaluate(() => window.__calls.filter(c => c[0] === 'CommitIsolateExtra').length);
-  check('确认后调用 CommitIsolateExtra', commitExtra === 1, `实际 ${commitExtra} 次`);
-}
 
 
 console.log('\n【23】JPG 角色卡：列表识别 + 右键菜单');
@@ -989,34 +830,6 @@ console.log('\n【23】JPG 角色卡：列表识别 + 右键菜单');
   await page.evaluate(() => { hideContextMenu(); window.__treeData = null; });
 }
 
-console.log('\n【24】zipmod 插件引用改为文字说明');
-{
-  await page.evaluate(() => {
-    window.__panelData = {
-      focus: { kind: 'mod', name: 'x.zipmod', abs: 'C:/KK/mods/x.zipmod', info: '被 2 个文件占用' },
-      sections: [
-        { id: 'cards', title: '使用此 zipmod 的卡片', layout: 'grid', total: 1,
-          tiles: [{ kind: 'card', name: 'card.JPG', abs: 'C:/KK/female/card.JPG', rel: '', badge: '', thumbKey: 'k', thumb: '', pending: true }],
-          more: 0, moreLabel: '', visible: true, empty: '', lazy: true },
-        { id: 'plugins', title: '插件引用', layout: 'summary', total: 2,
-          tiles: [ { kind: 'text', name: '被 2 个 dll 插件使用' }, { kind: 'text', name: '例如：A.dll、B.dll' } ],
-          more: 0, moreLabel: '', visible: true, empty: '', lazy: false },
-      ],
-      gen: 30,
-    };
-  });
-  await page.evaluate(async () => { await refreshPanel(); });
-  await page.waitForTimeout(400);
-
-  const summary = await page.locator('#panel-sections .panel-summary').count();
-  check('渲染文字说明区域', summary === 1, `实际 ${summary} 个`);
-  const text = summary ? await page.locator('#panel-sections .panel-summary').innerText() : '';
-  check('文案含「被 2 个 dll 插件使用」', text.includes('被 2 个 dll 插件使用'), `实际 "${text}"`);
-  const pluginRows = await page.locator('#panel-sections .panel-list-row').count();
-  check('不再渲染插件图标窗格', pluginRows === 0, `实际 ${pluginRows} 行`);
-  const cardCells = await page.locator('#panel-sections .panel-cell').count();
-  check('引用卡片（含 JPG）仍显示在区域 A', cardCells === 1, `实际 ${cardCells} 个`);
-}
 
 console.log('\n【21】右键隔离/启用：无需勾选、文件夹递归（修复两个 bug）');
 {

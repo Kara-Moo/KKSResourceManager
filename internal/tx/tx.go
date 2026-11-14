@@ -75,12 +75,12 @@ func (f FP) Equal(o FP) bool {
 
 // Tx 一个事务。
 type Tx struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Title     string `json:"title"`
-	StartedAt int64  `json:"startedAt"`
-	Steps     []Step `json:"steps"`
-	State     string `json:"state"` // open | committed | rolledback
+	ID        string   `json:"id"`
+	Kind      string   `json:"kind"`
+	Title     string   `json:"title"`
+	StartedAt int64    `json:"startedAt"`
+	Steps     []Step   `json:"steps"`
+	State     string   `json:"state"` // open | committed | rolledback
 	Logs      []string `json:"logs"`
 
 	// root journal 根目录（DELCARDS/_journal）
@@ -350,6 +350,51 @@ func (t *Tx) Mkdir(dir string) error {
 	return nil
 }
 
+// RmdirIfEmpty 删除空目录，并把这一步记入事务。
+//
+// 目录非空时不做任何事、不记步骤（返回 false, nil）——
+// 源侧可能还有符号链接或用户后来放入的文件，绝不能强删。
+// 回滚时该步骤会重建目录。
+func (t *Tx) RmdirIfEmpty(dir string) (bool, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.State != "open" {
+		return false, fmt.Errorf("事务已 %s，不能继续操作", t.State)
+	}
+	if len(t.Steps) >= MaxSteps {
+		return false, fmt.Errorf("事务步数超过上限 %d", MaxSteps)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("读取目录失败 %s: %w", dir, err)
+	}
+	if len(entries) > 0 {
+		return false, nil
+	}
+
+	t.addStep("rmdir", "", dir)
+	if err := t.persist(); err != nil {
+		return false, err
+	}
+
+	if err := os.Remove(dir); err != nil {
+		t.markFailed(err)
+		return false, fmt.Errorf("删除空目录失败 %s: %w", dir, err)
+	}
+
+	t.markDone(FP{})
+	if err := t.persist(); err != nil {
+		return false, err
+	}
+	t.logf("删除空目录 %s", dir)
+	return true, nil
+}
+
 // Rename 重命名。
 func (t *Tx) Rename(src, dst string) error {
 	t.mu.Lock()
@@ -493,6 +538,13 @@ func rollbackStep(step *Step) error {
 			return fmt.Errorf("目录非空，未删除: %w", err)
 		}
 		return nil
+
+	case "rmdir":
+		// 重建被本事务删除的空目录
+		if info, err := os.Stat(step.Dst); err == nil && info.IsDir() {
+			return nil
+		}
+		return os.MkdirAll(step.Dst, 0755)
 
 	case "trash":
 		// 从回收站移回原位
